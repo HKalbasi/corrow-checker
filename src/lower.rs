@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use crate::cfg::{return_slot, BasicBlock, CfgBody, Local, Place, Rvalue, Statement, Terminator};
 use anyhow::bail;
 use la_arena::{Arena, Idx};
-use lang_c::{ast::{self, DeclaratorKind}, span::Node};
+use lang_c::{
+    ast::{self, DeclaratorKind},
+    span::Node,
+};
 
 pub fn lower_body(fd: &ast::FunctionDefinition) -> anyhow::Result<CfgBody> {
     let mut ctx = LowerCtx::new();
@@ -59,7 +62,13 @@ impl LowerCtx {
                             };
                             current = c;
                         }
-                        ast::BlockItem::Declaration(_) | ast::BlockItem::StaticAssert(_) => {
+                        ast::BlockItem::Declaration(decl) => {
+                            let Some(c) = self.lower_declaration(&decl.node, current)? else {
+                                return Ok(None);
+                            };
+                            current = c;
+                        }
+                        ast::BlockItem::StaticAssert(_) => {
                             bail!("not supported: unknown block item");
                         }
                     }
@@ -80,6 +89,36 @@ impl LowerCtx {
         }
     }
 
+    fn lower_declaration(
+        &mut self,
+        declaration: &ast::Declaration,
+        mut current: Idx<BasicBlock>,
+    ) -> anyhow::Result<Option<Idx<BasicBlock>>> {
+        for declarator in &declaration.declarators {
+            let place = match &declarator.node.declarator.node.kind.node {
+                DeclaratorKind::Identifier(identifier) => self.named_local(&identifier.node.name),
+                DeclaratorKind::Abstract | DeclaratorKind::Declarator(_) => {
+                    bail!("not supported: unknown declarator kind")
+                }
+            };
+
+            if let Some(init) = &declarator.node.initializer {
+                match &init.node {
+                    ast::Initializer::Expression(expr) => {
+                        let Some(bb) = self.lower_expr_to_place(&expr.node, place.clone().into(), current)? else {
+                            return Ok(None);
+                        };
+                        current = bb;
+                    }
+                    ast::Initializer::List(_) => {
+                        bail!("not supported: unknown declarator initializer")
+                    }
+                }
+            }
+        }
+        Ok(Some(current))
+    }
+
     fn resolve_identifier(&self, id: &ast::Identifier) -> anyhow::Result<Idx<Local>> {
         match self.name_to_local.get(&id.name) {
             Some(x) => Ok(*x),
@@ -93,6 +132,12 @@ impl LowerCtx {
 
     fn push_assignment(&mut self, block: Idx<BasicBlock>, place: Place, rvalue: Rvalue) {
         self.push_statement(block, Statement::Assign(place, rvalue));
+    }
+
+    fn named_local(&mut self, name: &str) -> Idx<Local> {
+        let id = self.result.locals.alloc(Local);
+        self.name_to_local.insert(name.to_string(), id);
+        id
     }
 
     fn temp(&mut self) -> Idx<Local> {
@@ -172,8 +217,11 @@ impl LowerCtx {
                 }
                 Ok(Some(current))
             }
-            ast::Expression::Constant(_)
-            | ast::Expression::StringLiteral(_)
+            ast::Expression::Constant(constant) => {
+                self.push_assignment(current, place, Rvalue::Constant(constant.node.clone()));
+                Ok(Some(current))
+            }
+            ast::Expression::StringLiteral(_)
             | ast::Expression::GenericSelection(_)
             | ast::Expression::Member(_)
             | ast::Expression::Call(_)
@@ -191,7 +239,10 @@ impl LowerCtx {
         }
     }
 
-    fn add_argument_locals(&mut self, derived: &[Node<ast::DerivedDeclarator>]) -> anyhow::Result<()> {
+    fn add_argument_locals(
+        &mut self,
+        derived: &[Node<ast::DerivedDeclarator>],
+    ) -> anyhow::Result<()> {
         self.result.locals.alloc(Local); // Return slot
         for arg in derived {
             match &arg.node {
@@ -204,17 +255,15 @@ impl LowerCtx {
                             bail!("invalid declarator kind");
                         };
                         let name = &arg.node.name;
-                        let local_id = self.result.locals.alloc(Local);
-                        self.name_to_local.insert(name.clone(), local_id);
+                        self.named_local(&arg.node.name);
                     }
-
-                },
+                }
                 ast::DerivedDeclarator::Pointer(_)
                 | ast::DerivedDeclarator::Array(_)
                 | ast::DerivedDeclarator::KRFunction(_)
                 | ast::DerivedDeclarator::Block(_) => {
                     bail!("invalid declarator type");
-                },
+                }
             }
         }
         Ok(())

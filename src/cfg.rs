@@ -21,7 +21,10 @@ pub struct Place {
 
 impl From<Idx<Local>> for Place {
     fn from(local: Idx<Local>) -> Self {
-        Place { local, projections: vec![] }
+        Place {
+            local,
+            projections: vec![],
+        }
     }
 }
 
@@ -30,6 +33,7 @@ pub enum Rvalue {
     Use(Place),
     Ref(Place),
     Plus(Place, Place),
+    Constant(lang_c::ast::Constant),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +59,7 @@ pub struct BasicBlock {
     /// exception is that certain passes, such as `simplify_cfg`, swap
     /// out the terminator temporarily with `None` while they continue
     /// to recurse over the set of basic blocks.
-    pub terminator: Option<Terminator>,   
+    pub terminator: Option<Terminator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
