@@ -40,14 +40,14 @@ pub fn return_slot() -> Idx<Local> {
     Idx::from_raw(RawIdx::from(0))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Projection {
     Deref,
     Field(String),
     Index(Operand),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Place {
     pub local: Idx<Local>,
     pub projections: Vec<Projection>,
@@ -77,7 +77,7 @@ impl std::fmt::Debug for Place {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Rvalue {
     Use(Operand),
     Ref(Place),
@@ -94,7 +94,7 @@ impl std::fmt::Debug for Rvalue {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum BinaryOpKind {
     Add,
     Sub,
@@ -139,7 +139,7 @@ impl std::fmt::Debug for BinaryOpKind {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Operand {
     Place(Place),
     Constant(ConstOperand),
@@ -156,7 +156,7 @@ impl std::fmt::Debug for Operand {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum ConstOperand {
     CConst(lang_c::ast::Constant),
     StringLiteral(Vec<String>),
@@ -212,7 +212,7 @@ impl std::fmt::Debug for ConstOperand {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Statement {
     Assign(Place, Rvalue),
 }
@@ -225,7 +225,7 @@ impl std::fmt::Debug for Statement {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Terminator {
     Return,
     Call(Operand, Vec<Operand>, Place, Idx<BasicBlock>),
@@ -272,7 +272,7 @@ impl std::fmt::Debug for Terminator {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct BasicBlock {
     /// List of statements in this block.
     pub statements: Vec<Statement>,
@@ -313,6 +313,8 @@ impl std::fmt::Debug for CfgBody {
 
             if let Some(terminator) = &bb.terminator {
                 writeln!(f, "        {:?}", terminator)?;
+            } else {
+                writeln!(f, "        This basic block has no terminator, which is wrong out of construction")?;    
             }
 
             writeln!(f, "    }}")?;

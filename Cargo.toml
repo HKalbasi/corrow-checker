@@ -7,5 +7,6 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.75"
+crepe = "0.1.8"
 la-arena = "0.3.1"
 lang-c = "0.15.1"
