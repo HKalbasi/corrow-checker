@@ -1,3 +1,5 @@
+use core::panic;
+
 use la_arena::{Arena, Idx, RawIdx};
 
 #[derive(Clone, PartialEq, Eq)]
@@ -42,6 +44,7 @@ pub fn return_slot() -> Idx<Local> {
 pub enum Projection {
     Deref,
     Field(String),
+    Index(Operand),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -61,7 +64,16 @@ impl From<Idx<Local>> for Place {
 
 impl std::fmt::Debug for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "_{}", self.local.into_raw().into_u32())
+        let mut dbg = format!("_{}", self.local.into_raw().into_u32());
+
+        for (i, projection) in self.projections.iter().enumerate() {
+            dbg = match projection {
+                Projection::Deref => format!("&{}", dbg),
+                Projection::Field(name) => format!("{}.{}", dbg, name),
+                Projection::Index(index) => format!("{}[{:?}]", dbg, index),
+            };
+        }
+        f.write_str(&dbg)
     }
 }
 
@@ -85,12 +97,42 @@ impl std::fmt::Debug for Rvalue {
 #[derive(Clone, PartialEq, Eq)]
 pub enum BinaryOpKind {
     Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitXor,
+    BitAnd,
+    BitOr,
+    Shl,
+    Shr,
+    Eq,
+    Lt,
+    Le,
+    Ne,
+    Ge,
+    Gt,
 }
 
 impl std::fmt::Debug for BinaryOpKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let operator = match self {
             Self::Add => "+",
+            Self::Sub => "-",
+            Self::Mul => "*",
+            Self::Div => "/",
+            Self::Rem => "%",
+            Self::BitXor => "^",
+            Self::BitAnd => "&",
+            Self::BitOr => "|",
+            Self::Shl => "<<",
+            Self::Shr => ">>",
+            Self::Eq => "==",
+            Self::Lt => "<",
+            Self::Le => "<=",
+            Self::Ne => "!=",
+            Self::Ge => ">",
+            Self::Gt => ">=",
         };
 
         f.write_str(operator)
@@ -100,15 +142,32 @@ impl std::fmt::Debug for BinaryOpKind {
 #[derive(Clone, PartialEq, Eq)]
 pub enum Operand {
     Place(Place),
-    Constant(lang_c::ast::Constant),
+    Constant(ConstOperand),
+    External(String),
 }
 
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Place(place) => write!(f, "{:?}", place),
-            Self::Constant(constant) => {
-                f.write_str("Const(");
+            Self::Constant(constant) => write!(f, "{:?}", constant),
+            Self::External(name) => f.write_str(name),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum ConstOperand {
+    CConst(lang_c::ast::Constant),
+    StringLiteral(Vec<String>),
+}
+
+impl std::fmt::Debug for ConstOperand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Const(")?;
+
+        match self {
+            Self::CConst(constant) => {
                 let value = match constant {
                     lang_c::ast::Constant::Integer(integer) => format!(
                         "{}{}{}{}{}",
@@ -142,11 +201,14 @@ impl std::fmt::Debug for Operand {
                         },
                         if float.suffix.imaginary { "i" } else { "" }
                     ),
-                    lang_c::ast::Constant::Character(string) => format!("\"{}\"", string),
+                    lang_c::ast::Constant::Character(string) => format!("{}", string),
                 };
-                write!(f, "{})", value)
+                write!(f, "{}", value)?;
             }
+            Self::StringLiteral(literals) => write!(f, "{}", literals.join(" "))?,
         }
+
+        f.write_str(")")
     }
 }
 
@@ -163,9 +225,51 @@ impl std::fmt::Debug for Statement {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Terminator {
     Return,
+    Call(Operand, Vec<Operand>, Place, Idx<BasicBlock>),
+    Goto(Idx<BasicBlock>),
+    SwitchInt(Operand, Vec<u128>, Vec<Idx<BasicBlock>>),
+}
+
+impl std::fmt::Debug for Terminator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Terminator::Return => f.write_str("return"),
+            Terminator::Call(op, args, place, block) => {
+                write!(f, "{:?} = {:?}(", place, op)?;
+                for (i, arg) in args.iter().enumerate() {
+                    write!(f, "{:?}", arg)?;
+                    if i != args.len() - 1 {
+                        f.write_str(", ")?;
+                    }
+                }
+                write!(f, ") -> 'bb{}", block.into_raw().into_u32())
+            }
+            Terminator::Goto(bb) => write!(f, "goto 'bb{}", bb.into_raw().into_u32()),
+            Terminator::SwitchInt(op, arms, targets) => {
+                if arms.len() + 1 != targets.len() {
+                    panic!("This should not be possible");
+                }
+                writeln!(f, "switch {:?} {{", op)?;
+                for (i, arm) in arms.iter().enumerate() {
+                    writeln!(
+                        f,
+                        "    {} => 'bb{},",
+                        arm,
+                        targets.get(i).unwrap().into_raw().into_u32()
+                    )?;
+                }
+                writeln!(
+                    f,
+                    "    _ => 'bb{},",
+                    targets.last().unwrap().into_raw().into_u32()
+                )?;
+                f.write_str("}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

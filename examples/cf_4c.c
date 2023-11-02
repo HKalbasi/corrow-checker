@@ -4,22 +4,28 @@
 char a[100000][33], b[33];
 int c[100000];
 
-int f(int a, int b) {
-    return a + b;
+int f(int a, int b)
+{
+  return a + b;
 }
 
-int main() {
+int main()
+{
   int n, i, s = 0;
   scanf("%d", &n);
-  while (n--) {
+  while (n--)
+  {
     scanf("%s", b);
     for (i = 0; i < s; i++)
       if (strcmp(b, a[i]) == 0)
         break;
-    if (i == s) {
+    if (i == s)
+    {
       printf("OK\n");
       strcpy(a[s++], b);
-    } else {
+    }
+    else
+    {
       c[i]++;
       printf("%s%d\n", b, c[i]);
     }
