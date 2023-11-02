@@ -1,10 +1,13 @@
 use std::collections::HashMap;
 
-use crate::cfg::{return_slot, BasicBlock, CfgBody, Local, Place, Rvalue, Statement, Terminator};
+use crate::cfg::{
+    return_slot, BasicBlock, BinaryOpKind, CfgBody, Local, LocalKind, Operand, Place, Rvalue,
+    Statement, Terminator,
+};
 use anyhow::bail;
 use la_arena::{Arena, Idx};
 use lang_c::{
-    ast::{self, DeclaratorKind},
+    ast::{self, BlockItem, CallExpression, DeclaratorKind},
     span::Node,
 };
 
@@ -48,7 +51,9 @@ impl LowerCtx {
         match statement {
             ast::Statement::Return(e) => {
                 if let Some(e) = e {
-                    self.lower_expr_to_place(&e.node, return_slot().into(), current)?;
+                    if let Some(rvalue) = self.expr_to_rvalue(&e.node, current)? {
+                        self.push_assignment(current, return_slot().into(), rvalue);
+                    }
                 }
                 self.set_terminator(current, Terminator::Return);
                 Ok(None)
@@ -105,10 +110,10 @@ impl LowerCtx {
             if let Some(init) = &declarator.node.initializer {
                 match &init.node {
                     ast::Initializer::Expression(expr) => {
-                        let Some(bb) = self.lower_expr_to_place(&expr.node, place.clone().into(), current)? else {
-                            return Ok(None);
-                        };
-                        current = bb;
+                        if let Some(rvalue) = self.expr_to_rvalue(&expr.node, current)? {
+                            self.push_assignment(current, place.into(), rvalue);
+                        }
+                        return Ok(Some(current));
                     }
                     ast::Initializer::List(_) => {
                         bail!("not supported: unknown declarator initializer")
@@ -130,59 +135,72 @@ impl LowerCtx {
         self.result.basic_blocks[block].statements.push(statement);
     }
 
-    fn push_assignment(&mut self, block: Idx<BasicBlock>, place: Place, rvalue: Rvalue) {
-        self.push_statement(block, Statement::Assign(place, rvalue));
+    fn push_assignment(&mut self, block: Idx<BasicBlock>, place: Place, rvalue: Rvalue) -> Place {
+        self.push_statement(block, Statement::Assign(place.clone(), rvalue));
+        place
+    }
+
+    fn push_temp_assignment(&mut self, block: Idx<BasicBlock>, rvalue: Rvalue) -> Place {
+        let place = self.temp_local().into();
+        self.push_assignment(block, place, rvalue)
     }
 
     fn named_local(&mut self, name: &str) -> Idx<Local> {
-        let id = self.result.locals.alloc(Local);
-        self.name_to_local.insert(name.to_string(), id);
-        id
+        let idx = self
+            .result
+            .locals
+            .alloc(Local::new(LocalKind::Named(name.to_string())));
+        self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
+        self.name_to_local.insert(name.to_string(), idx);
+        idx
     }
 
-    fn temp(&mut self) -> Idx<Local> {
-        self.result.locals.alloc(Local)
+    fn temp_local(&mut self) -> Idx<Local> {
+        let idx = self.result.locals.alloc(Local::new(LocalKind::Anonymous));
+        self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
+        idx
     }
 
-    fn lower_expr_to_some_place(
+    fn return_local(&mut self) -> Idx<Local> {
+        let idx = self.result.locals.alloc(Local::new(LocalKind::ReturnSlot));
+        self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
+        idx
+    }
+
+    fn rvalue_to_operand(&mut self, rvalue: Rvalue, bb: Idx<BasicBlock>) -> Operand {
+        match rvalue {
+            Rvalue::Use(value) => value,
+            _ => {
+                let temp = self.push_temp_assignment(bb, rvalue);
+                Operand::Place(temp)
+            }
+        }
+    }
+
+    fn expr_to_rvalue(
         &mut self,
         expr: &ast::Expression,
-        current: Idx<BasicBlock>,
-    ) -> anyhow::Result<Option<(Place, Idx<BasicBlock>)>> {
-        let place: Place = self.temp().into();
-        let Some(bb) = self.lower_expr_to_place(expr, place.clone(), current)? else {
-            return Ok(None);
-        };
-        Ok(Some((place, bb)))
-    }
-
-    fn lower_expr_to_place(
-        &mut self,
-        expr: &ast::Expression,
-        place: Place,
-        mut current: Idx<BasicBlock>,
-    ) -> anyhow::Result<Option<Idx<BasicBlock>>> {
+        bb: Idx<BasicBlock>,
+    ) -> anyhow::Result<Option<Rvalue>> {
         match expr {
             ast::Expression::Identifier(id) => {
                 let local = self.resolve_identifier(&id.node)?;
-                self.push_assignment(current, place, Rvalue::Use(local.into()));
-                Ok(Some(current))
+                Ok(Some(Rvalue::Use(Operand::Place(local.into()))))
             }
             ast::Expression::BinaryOperator(bo) => {
-                let Some((lhs, c)) = self.lower_expr_to_some_place(&bo.node.lhs.node, current)?
-                else {
+                let Some(lhs) = self.expr_to_rvalue(&bo.node.lhs.node, bb)? else {
+                        return Ok(None);
+                };
+
+                let Some(rhs) = self.expr_to_rvalue(&bo.node.rhs.node, bb)? else {
                     return Ok(None);
                 };
-                current = c;
-                let Some((rhs, c)) = self.lower_expr_to_some_place(&bo.node.rhs.node, current)?
-                else {
-                    return Ok(None);
-                };
-                current = c;
-                match bo.node.operator.node {
-                    ast::BinaryOperator::Plus => {
-                        self.push_assignment(current, place, Rvalue::Plus(lhs, rhs));
-                    }
+
+                let lhs = self.rvalue_to_operand(lhs, bb);
+                let rhs = self.rvalue_to_operand(rhs, bb);
+
+                let rvalue = match bo.node.operator.node {
+                    ast::BinaryOperator::Plus => Rvalue::BinaryOp(BinaryOpKind::Add, lhs, rhs),
                     ast::BinaryOperator::Index
                     | ast::BinaryOperator::Multiply
                     | ast::BinaryOperator::Divide
@@ -214,12 +232,12 @@ impl LowerCtx {
                     | ast::BinaryOperator::AssignBitwiseOr => {
                         bail!("not supported: unknown binary operator")
                     }
-                }
-                Ok(Some(current))
+                };
+
+                Ok(Some(rvalue))
             }
             ast::Expression::Constant(constant) => {
-                self.push_assignment(current, place, Rvalue::Constant(constant.node.clone()));
-                Ok(Some(current))
+                Ok(Some(Rvalue::Use(Operand::Constant(constant.node.clone()))))
             }
             ast::Expression::StringLiteral(_)
             | ast::Expression::GenericSelection(_)
@@ -243,7 +261,7 @@ impl LowerCtx {
         &mut self,
         derived: &[Node<ast::DerivedDeclarator>],
     ) -> anyhow::Result<()> {
-        self.result.locals.alloc(Local); // Return slot
+        self.return_local();
         for arg in derived {
             match &arg.node {
                 ast::DerivedDeclarator::Function(arg) => {
@@ -254,7 +272,6 @@ impl LowerCtx {
                         let DeclaratorKind::Identifier(arg) = &arg.node.kind.node else {
                             bail!("invalid declarator kind");
                         };
-                        let name = &arg.node.name;
                         self.named_local(&arg.node.name);
                     }
                 }
