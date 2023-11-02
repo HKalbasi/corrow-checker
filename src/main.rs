@@ -1,4 +1,7 @@
-use lang_c::{driver::{Config, parse}, ast::{ExternalDeclaration, Identifier, DeclaratorKind}};
+use lang_c::{
+    ast::{DeclaratorKind, ExternalDeclaration, Identifier},
+    driver::{parse, Config},
+};
 use lower::lower_body;
 
 mod cfg;
@@ -15,23 +18,23 @@ fn main() {
                         println!("decl {}", id.node.name);
                     }
                 }
-            },
+            }
             ExternalDeclaration::StaticAssert(_) => (),
             ExternalDeclaration::FunctionDefinition(fd) => {
-                if let DeclaratorKind::Identifier(id) = &fd.node.declarator.node.kind.node {
-                    println!("fn {}", id.node.name);
-                } else {
-                    unreachable!();
-                }
-                match lower_body(&fd.node) {
+                let name = match &fd.node.declarator.node.kind.node {
+                    DeclaratorKind::Identifier(id) => id.node.name.clone(),
+                    _ => unreachable!(),
+                };
+
+                match lower_body(name, &fd.node) {
                     Ok(cfg) => {
                         println!("{:#?}", cfg);
-                    },
+                    }
                     Err(error) => {
                         println!("mir lowering failed: {}", error);
-                    },
+                    }
                 }
-            },
+            }
         }
     }
 }

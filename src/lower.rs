@@ -7,7 +7,7 @@ use crate::cfg::{
 use anyhow::bail;
 use la_arena::{Arena, Idx};
 use lang_c::{
-    ast::{self, DeclaratorKind, IfStatement, IntegerSuffix},
+    ast::{self, DeclaratorKind, IntegerSuffix},
     span::Node,
 };
 
@@ -45,8 +45,8 @@ impl ActiveBb {
     }
 }
 
-pub fn lower_body(fd: &ast::FunctionDefinition) -> anyhow::Result<CfgBody> {
-    let mut ctx = LowerCtx::new();
+pub fn lower_body(name: String, fd: &ast::FunctionDefinition) -> anyhow::Result<CfgBody> {
+    let mut ctx = LowerCtx::new(name);
     ctx.add_argument_locals(&fd.declarator.node.derived);
     let start = ctx.new_basic_block();
     let mut active_bb = ActiveBb::new(start);
@@ -60,11 +60,12 @@ struct LowerCtx {
 }
 
 impl LowerCtx {
-    fn new() -> LowerCtx {
+    fn new(name: String) -> LowerCtx {
         LowerCtx {
             result: CfgBody {
                 basic_blocks: Arena::new(),
                 locals: Arena::new(),
+                name,
             },
             name_to_local: HashMap::new(),
         }
@@ -74,16 +75,13 @@ impl LowerCtx {
         self.result.basic_blocks.alloc(BasicBlock::default())
     }
 
-    fn new_basic_blocks(&mut self, n: u32) -> Vec<Idx<BasicBlock>> {
-        let mut idxs = vec![];
-        for i in 0..n {
-            idxs.push(self.new_basic_block());
-        }
-        idxs
-    }
-
     fn set_terminator(&mut self, terminator: Terminator, bb_idx: Idx<BasicBlock>) {
-        self.result.basic_blocks[bb_idx].terminator = Some(terminator);
+        let bb = &mut self.result.basic_blocks[bb_idx];
+        if let Some(_) = bb.terminator {
+            dbg!("-- resetting terminator ignored --");
+        } else {
+            bb.terminator = Some(terminator);
+        }
     }
 
     fn lower_statement(
@@ -120,11 +118,7 @@ impl LowerCtx {
                 let Some(expr) = expr else { return Ok(()) };
                 let old_bb = active_bb.idx;
                 let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
-                if old_bb == active_bb.idx {
-                    // this prevents the extra assignment in case of function calls
-                    // (the destination field of an call terminator takes care of moving the returned value to a temp)
-                    self.push_temp_assignment(rvalue, active_bb);
-                }
+                self.push_discard_if_required(rvalue, active_bb);
                 Ok(())
             }
             ast::Statement::While(whl) => {
@@ -139,11 +133,12 @@ impl LowerCtx {
                     vec![1],
                     vec![loop_bb.clone(), break_bb.clone()],
                 );
-                self.set_terminator(terminator, continue_bb);
+                self.set_terminator(terminator, active_bb.idx);
                 active_bb.switch(loop_bb);
                 active_bb.activate_loop(continue_bb, break_bb);
                 self.lower_statement(&whl.node.statement.node, active_bb)?;
-                self.set_terminator(Terminator::Goto(continue_bb), loop_bb);
+                self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
+                active_bb.deactivate_loop();
                 active_bb.switch(break_bb);
                 Ok(())
             }
@@ -158,7 +153,7 @@ impl LowerCtx {
                             ast::ForInitializer::Empty => unreachable!(),
                             ast::ForInitializer::Expression(expr) => {
                                 let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
-                                self.push_temp_assignment(rvalue, active_bb);
+                                self.push_discard_if_required(rvalue, active_bb);
                             }
                             ast::ForInitializer::Declaration(decl) => {
                                 self.lower_declaration(&decl.node, active_bb)?;
@@ -170,12 +165,25 @@ impl LowerCtx {
                     }
                 }
 
+                // The following two statements help allocate condition and step bbs before loop and break bbs
+                let condition_info = fr
+                    .node
+                    .condition
+                    .as_ref()
+                    .map(|condition| (condition, self.new_basic_block()));
+
+                let step_info = fr
+                    .node
+                    .step
+                    .as_ref()
+                    .map(|step| (step, self.new_basic_block()));
+
                 let loop_bb = self.new_basic_block();
                 let break_bb = self.new_basic_block();
                 let mut continue_bb = loop_bb;
 
-                if let Some(condition) = &fr.node.condition {
-                    continue_bb = self.new_basic_block();
+                if let Some((condition, bb)) = condition_info {
+                    continue_bb = bb;
                     self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
                     active_bb.switch(continue_bb);
                     let operand = self.expr_to_operand(&condition.node, active_bb)?;
@@ -185,22 +193,23 @@ impl LowerCtx {
                         vec![1],
                         vec![loop_bb.clone(), break_bb.clone()],
                     );
-                    self.set_terminator(terminator, continue_bb);
+                    self.set_terminator(terminator, active_bb.idx);
                 }
 
-                if let Some(step) = &fr.node.step {
-                    let step_bb = self.new_basic_block();
+                if let Some((step, bb)) = step_info {
+                    let step_bb = bb;
                     active_bb.switch(step_bb);
                     let rvalue = self.expr_to_rvalue(&step.node, active_bb)?;
-                    self.push_temp_assignment(rvalue, active_bb);
-                    self.set_terminator(Terminator::Goto(continue_bb), step_bb);
+                    self.push_discard_if_required(rvalue, active_bb);
+                    self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
                     continue_bb = step_bb;
                 }
 
                 active_bb.switch(loop_bb);
                 active_bb.activate_loop(continue_bb, break_bb);
                 self.lower_statement(&fr.node.statement.node, active_bb)?;
-                self.set_terminator(Terminator::Goto(continue_bb), loop_bb);
+                self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
+                active_bb.deactivate_loop();
                 active_bb.switch(break_bb);
                 Ok(())
             }
@@ -220,6 +229,15 @@ impl LowerCtx {
             | ast::Statement::DoWhile(_)
             | ast::Statement::Goto(_)
             | ast::Statement::Asm(_) => bail!("not supported: unknown statement type"),
+        }
+    }
+
+    fn push_discard_if_required(&mut self, rvalue: Rvalue, active_bb: &mut ActiveBb) {
+        match rvalue {
+            Rvalue::Use(_) => (),
+            _ => {
+                self.push_temp_assignment(rvalue, active_bb);
+            }
         }
     }
 
@@ -267,13 +285,13 @@ impl LowerCtx {
             );
             active_bb.switch(then_bb.clone());
             self.lower_statement(&eef.then_statement.node, active_bb)?;
-            self.set_terminator(Terminator::Goto(after_bb), then_bb.clone());
+            self.set_terminator(Terminator::Goto(after_bb), active_bb.idx);
         }
 
         if let Some((else_statement, else_bb)) = uncoditional_else {
             active_bb.switch(else_bb.clone());
             self.lower_statement(&else_statement, active_bb)?;
-            self.set_terminator(Terminator::Goto(after_bb), else_bb.clone());
+            self.set_terminator(Terminator::Goto(after_bb), active_bb.idx);
         }
 
         active_bb.switch(after_bb);
@@ -317,9 +335,13 @@ impl LowerCtx {
     }
 
     fn push_statement(&mut self, statement: Statement, active_bb: &mut ActiveBb) {
-        self.result.basic_blocks[active_bb.idx]
-            .statements
-            .push(statement);
+        let bb = &mut self.result.basic_blocks[active_bb.idx];
+
+        if let Some(_) = bb.terminator {
+            dbg!("-- pushing statement ignore since the block has a terminator --");
+        } else {
+            bb.statements.push(statement);
+        }
     }
 
     fn push_assignment(&mut self, place: Place, rvalue: Rvalue, active_bb: &mut ActiveBb) -> Place {
@@ -393,7 +415,7 @@ impl LowerCtx {
                         Rvalue::Use(Operand::Place(lhs))
                     }
                     ast::BinaryOperator::Assign => {
-                        let mut lhs = self.expr_to_operand_place(&bo.node.lhs.node, active_bb)?;
+                        let lhs = self.expr_to_operand_place(&bo.node.lhs.node, active_bb)?;
                         let rhs = self.expr_to_rvalue(&bo.node.rhs.node, active_bb)?;
                         let place = self.push_assignment(lhs, rhs, active_bb);
                         Rvalue::Use(Operand::Place(place))

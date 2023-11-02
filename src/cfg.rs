@@ -256,17 +256,17 @@ impl std::fmt::Debug for Terminator {
                 for (i, arm) in arms.iter().enumerate() {
                     writeln!(
                         f,
-                        "    {} => 'bb{},",
+                        "            {} => 'bb{},",
                         arm,
                         targets.get(i).unwrap().into_raw().into_u32()
                     )?;
                 }
                 writeln!(
                     f,
-                    "    _ => 'bb{},",
+                    "            _ => 'bb{},",
                     targets.last().unwrap().into_raw().into_u32()
                 )?;
-                f.write_str("}")
+                f.write_str("        }")
             }
         }
     }
@@ -288,8 +288,36 @@ pub struct BasicBlock {
     pub terminator: Option<Terminator>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct CfgBody {
     pub basic_blocks: Arena<BasicBlock>,
     pub locals: Arena<Local>,
+    pub name: String,
+}
+
+impl std::fmt::Debug for CfgBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "fn {}() {{", self.name)?;
+        for (_, local) in self.locals.iter() {
+            writeln!(f, "    {:?}", local)?;
+        }
+
+        writeln!(f)?;
+
+        for (idx, bb) in self.basic_blocks.iter() {
+            writeln!(f)?;
+            writeln!(f, "    'bb{}: {{", idx.into_raw().into_u32())?;
+            for statement in &bb.statements {
+                writeln!(f, "        {:#?}", statement)?;
+            }
+
+            if let Some(terminator) = &bb.terminator {
+                writeln!(f, "        {:?}", terminator)?;
+            }
+
+            writeln!(f, "    }}")?;
+        }
+
+        writeln!(f, "}}")
+    }
 }
