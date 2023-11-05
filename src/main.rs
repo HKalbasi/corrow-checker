@@ -7,7 +7,7 @@ use lang_c::{
 };
 use lower::lower_body;
 
-use crate::check::check_cfg;
+use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn};
 
 mod cfg;
 mod check;
@@ -45,7 +45,52 @@ fn main() {
                         println!("{:#?}", cfg);
                         let errors = check_cfg(&cfg);
                         for error in errors {
-                            println!("{:?}", error);
+                            match error {
+                                CheckError::LeakByAssign(LeakByAssign(own_span, lost_span)) => {
+                                    Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
+                                        .with_message("Potential leak detected")
+                                        .with_label(
+                                            Label::new((
+                                                "malloc_leak1.c",
+                                                own_span.start..own_span.end,
+                                            ))
+                                            .with_message("Ownership of the value transferred to this function here")
+                                            .with_color(ariadne::Color::Cyan),
+                                        )
+                                        .with_label(
+                                            Label::new((
+                                                "malloc_leak1.c",
+                                                lost_span.start..lost_span.end,
+                                            ))
+                                            .with_message("Ownership handle lost without proper destruction")
+                                            .with_color(ariadne::Color::Red),
+                                        )
+                                        .finish()
+                                        .eprint(("malloc_leak1.c", Source::from(&ast.source)));
+                                },
+                                CheckError::LeakByReturn(LeakByReturn(own_span, return_span)) => {
+                                    Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
+                                        .with_message("Potential leak detected")
+                                        .with_label(
+                                            Label::new((
+                                                "malloc_leak1.c",
+                                                own_span.start..own_span.end,
+                                            ))
+                                            .with_message("Ownership of the value transferred to this function here")
+                                            .with_color(ariadne::Color::Cyan),
+                                        )
+                                        .with_label(
+                                            Label::new((
+                                                "malloc_leak1.c",
+                                                return_span.start..return_span.end,
+                                            ))
+                                            .with_message("Function exited without proper destruction of that value")
+                                            .with_color(ariadne::Color::Red),
+                                        )
+                                        .finish()
+                                        .eprint(("malloc_leak1.c", Source::from(&ast.source)));
+                                }
+                            }
                         }
                     }
                     Err(error) => {

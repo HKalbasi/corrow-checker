@@ -1,6 +1,7 @@
 use core::panic;
 
 use la_arena::{Arena, Idx, RawIdx};
+use lang_c::span::Span;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Local {
@@ -66,7 +67,7 @@ impl std::fmt::Debug for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = format!("_{}", self.local.into_raw().into_u32());
 
-        for (i, projection) in self.projections.iter().enumerate() {
+        for (_, projection) in self.projections.iter().enumerate() {
             dbg = match projection {
                 Projection::Deref => format!("&{}", dbg),
                 Projection::Field(name) => format!("{}.{}", dbg, name),
@@ -214,21 +215,27 @@ impl std::fmt::Debug for ConstOperand {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Statement {
-    Assign(Place, Rvalue),
+    Assign(Place, Rvalue, Span),
 }
 
 impl std::fmt::Debug for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Assign(lhs, rhs) => write!(f, "{:#?} = {:#?}", lhs, rhs),
+            Self::Assign(lhs, rhs, _) => write!(f, "{:#?} = {:#?}", lhs, rhs),
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Terminator {
-    Return,
-    Call(Operand, Vec<Operand>, Place, Idx<BasicBlock>),
+    Return(Span),
+    Call {
+        callee: Operand,
+        args: Vec<Operand>,
+        return_place: Place,
+        target: Idx<BasicBlock>,
+        span: Span,
+    },
     Goto(Idx<BasicBlock>),
     SwitchInt(Operand, Vec<u128>, Vec<Idx<BasicBlock>>),
 }
@@ -236,16 +243,16 @@ pub enum Terminator {
 impl std::fmt::Debug for Terminator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Terminator::Return => f.write_str("return"),
-            Terminator::Call(op, args, place, block) => {
-                write!(f, "{:?} = {:?}(", place, op)?;
+            Terminator::Return(_) => f.write_str("return"),
+            Terminator::Call { callee, args, return_place, target, span: _ } => {
+                write!(f, "{:?} = {:?}(", return_place, callee)?;
                 for (i, arg) in args.iter().enumerate() {
                     write!(f, "{:?}", arg)?;
                     if i != args.len() - 1 {
                         f.write_str(", ")?;
                     }
                 }
-                write!(f, ") -> 'bb{}", block.into_raw().into_u32())
+                write!(f, ") -> 'bb{}", target.into_raw().into_u32())
             }
             Terminator::Goto(bb) => write!(f, "goto 'bb{}", bb.into_raw().into_u32()),
             Terminator::SwitchInt(op, arms, targets) => {

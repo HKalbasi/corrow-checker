@@ -79,8 +79,7 @@ checksum = "3752f229dcc5a481d60f385fa479ff46818033d881d2d801aa27dffcfb5e8306"
 [[package]]
 name = "lang-c"
 version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "720e6492b795d1f6838eb2e51879ec3073be745a20e52c32a241b80b3c8ed998"
+source = "git+https://github.com/HKalbasi/lang-c.git#9a72edda21ad206f57b18b932e5c86f1c4744138"
 
 [[package]]
 name = "petgraph"

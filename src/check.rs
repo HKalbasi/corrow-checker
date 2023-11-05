@@ -4,6 +4,7 @@ use crepe::crepe;
 use la_arena::ArenaMap;
 
 use crate::cfg::{CfgBody, Operand, Place, Statement, Terminator, Rvalue};
+use lang_c::span::Span;
 
 crepe! {
     @input
@@ -20,35 +21,35 @@ crepe! {
 
     @input
     #[derive(Debug)]
-    struct ControlFlowReturns(NodeId);
+    struct ControlFlowReturns(NodeId, Span);
 
     @input
     #[derive(Debug)]
-    struct PlaceFilledByOwnedValue(PlaceId, NodeId);
+    struct PlaceFilledByOwnedValue(PlaceId, NodeId, Span);
 
     @input
     #[derive(Debug)]
-    struct PlacePrevValueLostByAssign(PlaceId, NodeId);
+    struct PlacePrevValueLostByAssign(PlaceId, NodeId, Span);
 
     @input
     #[derive(Debug)]
     struct Assign(PlaceId, PlaceId, NodeId);
 
-    struct PlaceOwnValue(PlaceId, NodeId);
+    struct PlaceOwnValue(PlaceId, NodeId, Span);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByAssign();
+    pub struct LeakByAssign(pub Span, pub Span);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByReturn();
+    pub struct LeakByReturn(pub Span, pub Span);
 
-    PlaceOwnValue(p, n) <- PlaceFilledByOwnedValue(p, n);
-    PlaceOwnValue(p, n) <- PlaceOwnValue(p2, n), Assign(p, p2, n);
-    PlaceOwnValue(p, n) <- PlaceOwnValue(p, n1), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n), !Assign(_, p, n1);
-    LeakByAssign() <- PlaceOwnValue(p, n1), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n);
-    LeakByReturn() <- PlaceOwnValue(_, n), ControlFlowReturns(n);
+    PlaceOwnValue(p, n, span) <- PlaceFilledByOwnedValue(p, n, span);
+    PlaceOwnValue(p, n, span) <- PlaceOwnValue(p2, n, span), Assign(p, p2, n);
+    PlaceOwnValue(p, n, span) <- PlaceOwnValue(p, n1, span), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1);
+    LeakByAssign(own_span, lost_span) <- PlaceOwnValue(p, n1, own_span), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
+    LeakByReturn(own_span, return_span) <- PlaceOwnValue(_, n, own_span), ControlFlowReturns(n, return_span);
 }
 
 #[derive(Debug)]
@@ -100,11 +101,11 @@ impl CrepeFiller {
             for stmt in &bb_data.statements {
                 let mut nn = self.add_node();
                 match stmt {
-                    Statement::Assign(p, r) => {
+                    Statement::Assign(p, r, span) => {
                         let p = self.place_id_of(p);
                         self.crepe
                             .placeprevvaluelostbyassign
-                            .push(PlacePrevValueLostByAssign(p, nn));
+                            .push(PlacePrevValueLostByAssign(p, nn, *span));
                         self.add_control_flow_link(cur, nn);
                         cur = nn;
                         nn = self.add_node();
@@ -130,21 +131,21 @@ impl CrepeFiller {
         for (bb, bb_data) in cfg.basic_blocks.iter() {
             let terminator = bb_data.terminator.as_ref().unwrap();
             match terminator {
-                Terminator::Return => {
+                Terminator::Return(span) => {
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);
-                    self.crepe.controlflowreturns.push(ControlFlowReturns(end_of_block[bb]));
+                    self.crepe.controlflowreturns.push(ControlFlowReturns(end_of_block[bb], *span));
                 }
-                Terminator::Call(op, _, p, target) => {
+                Terminator::Call { callee, args: _, return_place: p, target, span } => {
                     let n1 = self.add_node();
                     let n2 = self.add_node();
                     let p = self.place_id_of(p);
                     self.crepe
                         .placeprevvaluelostbyassign
-                        .push(PlacePrevValueLostByAssign(p, n1));
-                    if *op == Operand::External("malloc".to_string()) {
+                        .push(PlacePrevValueLostByAssign(p, n1, *span));
+                    if *callee == Operand::External("malloc".to_string()) {
                         self.crepe
                             .placefilledbyownedvalue
-                            .push(PlaceFilledByOwnedValue(p, n2));
+                            .push(PlaceFilledByOwnedValue(p, n2, *span));
                     }
                     self.add_control_flow_link(before_terminator[bb], n1);
                     self.add_control_flow_link(n1, n2);
