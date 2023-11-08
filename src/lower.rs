@@ -267,12 +267,16 @@ impl<'a> LowerCtx<'a> {
                 Ok(())
             }
             ast::Statement::Continue => {
-                let Some(continue_bb) = active_bb.continue_bb else { bail!("unexpected statement: continue is not used in a loop") };
+                let Some(continue_bb) = active_bb.continue_bb else {
+                    bail!("unexpected statement: continue is not used in a loop")
+                };
                 self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
                 Ok(())
             }
             ast::Statement::Break => {
-                let Some(break_bb) = active_bb.break_bb else { bail!("unexpected statement: break is not used in a loop") };
+                let Some(break_bb) = active_bb.break_bb else {
+                    bail!("unexpected statement: break is not used in a loop")
+                };
                 self.set_terminator(Terminator::Goto(break_bb), active_bb.idx);
                 Ok(())
             }
@@ -487,7 +491,7 @@ impl<'a> LowerCtx<'a> {
         span: Span,
     ) -> Place {
         match rvalue {
-            Rvalue::Use(Operand::Place(place, span)) => place,
+            Rvalue::Use(Operand::Place(place, _)) => place,
             _ => self.push_temp_assignment(rvalue, active_bb, span),
         }
     }

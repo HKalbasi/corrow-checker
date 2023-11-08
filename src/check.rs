@@ -3,8 +3,9 @@ use std::collections::HashMap;
 use crepe::crepe;
 use la_arena::ArenaMap;
 
-use crate::cfg::{
-    CfgBody, Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
+use crate::{
+    cfg::{CfgBody, Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator},
+    report::OwnershipReason,
 };
 use lang_c::span::Span;
 
@@ -47,30 +48,30 @@ crepe! {
 
     struct PlaceMayDangle(PlaceId, NodeId, Span);
 
-    struct PlaceOwnValue(PlaceId, NodeId, Span, Option<Span>);
+    struct PlaceOwnValue(PlaceId, NodeId, OwnershipReason);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByAssign(pub Span, pub Option<Span>, pub Span);
+    pub struct LeakByAssign(pub OwnershipReason, pub Span);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByReturn(pub Span, pub Option<Span>, pub Span);
+    pub struct LeakByReturn(pub OwnershipReason, pub Span);
 
     @output
     #[derive(Debug)]
     pub struct UseAfterMove(pub Span, pub Span);
 
-    PlaceOwnValue(p, n, intro_span, None) <- PlaceFilledByOwnedValue(p, n, intro_span);
-    PlaceOwnValue(p, n, intro_span, Some(move_span)) <- PlaceOwnValue(p2, n, intro_span, _), Assign(p, p2, n, move_span);
-    PlaceOwnValue(p, n, intro_span, move_span) <- PlaceOwnValue(p, n1, intro_span, move_span), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1, _), !OwnershipLeft(p, n1, _);
+    PlaceOwnValue(p, n, OwnershipReason::new(intro_span)) <- PlaceFilledByOwnedValue(p, n, intro_span);
+    PlaceOwnValue(p, n, reason.with_move(move_span)) <- PlaceOwnValue(p2, n, reason), Assign(p, p2, n, move_span);
+    PlaceOwnValue(p, n, reason) <- PlaceOwnValue(p, n1, reason), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1, _), !OwnershipLeft(p, n1, _);
 
-    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _, _), Assign(_, p, n, lost_span);
-    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _, _), OwnershipLeft(p, n, lost_span);
+    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _), Assign(_, p, n, lost_span);
+    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _), OwnershipLeft(p, n, lost_span);
     PlaceMayDangle(p, n, lost_span) <- PlaceMayDangle(p, n1, lost_span), ControlFlowGoes(n1, n), !Assign(p, _, n, _);
 
-    LeakByAssign(own_intro_span, own_move_span, lost_span) <- PlaceOwnValue(p, n1, own_intro_span, own_move_span), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
-    LeakByReturn(own_intro_span, own_move_span, return_span) <- PlaceOwnValue(_, n, own_intro_span, own_move_span), ControlFlowReturns(n, return_span);
+    LeakByAssign(own_reason, lost_span) <- PlaceOwnValue(p, n1, own_reason), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
+    LeakByReturn(own_reason, return_span) <- PlaceOwnValue(_, n, own_reason), ControlFlowReturns(n, return_span);
     UseAfterMove(move_span, use_span) <- PlaceMayDangle(p, n1, move_span), ControlFlowGoes(n1, n), PlaceUsed(p, n, use_span);
 }
 

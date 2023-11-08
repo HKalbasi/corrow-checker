@@ -1,26 +1,24 @@
-use std::{collections::HashMap, error, fs::read_to_string};
+use std::collections::HashMap;
 
 use ariadne::{Label, Report, Source};
 use cfg::CfgStatics;
 use la_arena::Arena;
 use lang_c::{
-    ast::{DeclaratorKind, ExternalDeclaration, Identifier},
+    ast::{DeclaratorKind, ExternalDeclaration},
     driver::{parse, Config},
 };
 use lower::{lower_body, lower_statics};
 
-use crate::{
-    check::{check_cfg, CheckError, LeakByAssign, LeakByReturn, UseAfterMove},
-    utils::SpanUtils,
-};
+use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn, UseAfterMove};
 
 mod cfg;
 mod check;
 mod lower;
+mod report;
 mod utils;
 
 // const TEST_FILE: &str = "malloc_leak1.c";
-const TEST_FILE: &str = "use_after_move3.c";
+const TEST_FILE: &str = "malloc_leak1.c";
 
 fn main() {
     let config = Config::default();
@@ -32,7 +30,7 @@ fn main() {
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
-                lower_statics(&decl.node, &mut statics);
+                lower_statics(&decl.node, &mut statics).unwrap();
                 for decls in &decl.node.declarators {
                     if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
                         Report::build(ariadne::ReportKind::Advice, TEST_FILE, 0)
@@ -43,7 +41,8 @@ fn main() {
                                     .with_color(ariadne::Color::Cyan),
                             )
                             .finish()
-                            .eprint((TEST_FILE, Source::from(&ast.source)));
+                            .eprint((TEST_FILE, Source::from(&ast.source)))
+                            .unwrap();
                     }
                 }
             }
@@ -60,33 +59,12 @@ fn main() {
                         let errors = check_cfg(&cfg);
                         for error in errors {
                             match error {
-                                CheckError::LeakByAssign(LeakByAssign(
-                                    own_intro_span,
-                                    own_moved_span,
-                                    lost_span,
-                                )) => {
-                                    let mut builder = Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
-                                        .with_message("Potential leak detected")
-                                        .with_label(
-                                            Label::new((
-                                                TEST_FILE,
-                                                own_intro_span.start..own_intro_span.end,
-                                            ))
-                                            .with_message("Ownership of the value transferred to this function here")
-                                            .with_color(ariadne::Color::Cyan),
-                                        );
+                                CheckError::LeakByAssign(LeakByAssign(own_reason, lost_span)) => {
+                                    let mut builder =
+                                        Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
+                                            .with_message("Potential leak detected");
 
-                                    if let Some(own_moved_span) = own_moved_span {
-                                        if !own_moved_span.contains(&own_intro_span) {
-                                            builder.add_label(Label::new((
-                                                TEST_FILE,
-                                                    own_moved_span.start..own_moved_span.end,
-                                                ))
-                                                .with_message("Ownership of the value transferred to this place here")
-                                                .with_color(ariadne::Color::Cyan)
-                                            )
-                                        }
-                                    }
+                                    own_reason.add_to_report(&mut builder);
 
                                     builder
                                         .with_label(
@@ -100,23 +78,15 @@ fn main() {
                                             .with_color(ariadne::Color::Red),
                                         )
                                         .finish()
-                                        .eprint((TEST_FILE, Source::from(&ast.source)));
+                                        .eprint((TEST_FILE, Source::from(&ast.source)))
+                                        .unwrap();
                                 }
-                                CheckError::LeakByReturn(LeakByReturn(
-                                    own_span,
-                                    _,
-                                    return_span,
-                                )) => {
-                                    Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
-                                        .with_message("Potential leak detected")
-                                        .with_label(
-                                            Label::new((
-                                                TEST_FILE,
-                                                own_span.start..own_span.end,
-                                            ))
-                                            .with_message("Ownership of the value transferred to this function here")
-                                            .with_color(ariadne::Color::Cyan),
-                                        )
+                                CheckError::LeakByReturn(LeakByReturn(own_reason, return_span)) => {
+                                    let mut builder =
+                                        Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
+                                            .with_message("Potential leak detected");
+                                    own_reason.add_to_report(&mut builder);
+                                    builder
                                         .with_label(
                                             Label::new((
                                                 TEST_FILE,
@@ -126,7 +96,8 @@ fn main() {
                                             .with_color(ariadne::Color::Red),
                                         )
                                         .finish()
-                                        .eprint((TEST_FILE, Source::from(&ast.source)));
+                                        .eprint((TEST_FILE, Source::from(&ast.source)))
+                                        .unwrap();
                                 }
                                 CheckError::UseAfterMove(UseAfterMove(move_span, use_span)) => {
                                     Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
@@ -142,7 +113,8 @@ fn main() {
                                                 .with_color(ariadne::Color::Red),
                                         )
                                         .finish()
-                                        .eprint((TEST_FILE, Source::from(&ast.source)));
+                                        .eprint((TEST_FILE, Source::from(&ast.source)))
+                                        .unwrap();
                                 }
                             }
                         }
