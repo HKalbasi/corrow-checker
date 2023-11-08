@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use crepe::crepe;
 use la_arena::ArenaMap;
 
-use crate::cfg::{CfgBody, Operand, Place, RawPlace, Rvalue, Statement, Terminator};
+use crate::cfg::{
+    CfgBody, Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
+};
 use lang_c::span::Span;
 
 crepe! {
@@ -151,7 +153,8 @@ impl CrepeFiller {
                         .push(PlacePrevValueLostByAssign(p, n1, *span));
                     if let Operand::Place(place) = callee {
                         if let RawPlace::Static(idx) = &place.raw {
-                            if cfg.statics.name_to_static.contains_key("malloc") {
+                            let sttc = &cfg.statics.statics[idx.clone()];
+                            if let Static::Function(Some(Ownership::Owned), _) = sttc {
                                 self.crepe
                                     .placefilledbyownedvalue
                                     .push(PlaceFilledByOwnedValue(p, n2, *span));

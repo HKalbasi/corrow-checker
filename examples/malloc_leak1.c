@@ -1,11 +1,11 @@
 #include <stddef.h>
 
-void *owned malloc(unsigned long size);
+void *owned falloc(unsigned long size);
 
 int main()
 {
-    void *p1 = malloc(5);
+    void *p1 = falloc(5);
     void *p2 = p1;
-    p2 = malloc(10);
+    p2 = falloc(10);
     return 0;
 }
