@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 
 use crate::cfg::{
-    return_slot, BasicBlock, BinaryOpKind, CfgBody, ConstOperand, Local, LocalKind, Operand, Place,
-    Rvalue, Statement, Terminator,
+    return_slot, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local, LocalKind,
+    Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
 };
 use anyhow::bail;
 use la_arena::{Arena, Idx};
 use lang_c::{
-    ast::{self, DeclaratorKind, IntegerSuffix},
+    ast::{self, DeclaratorKind, IntegerSuffix, PointerQualifier},
     span::{Node, Span},
 };
 
@@ -45,8 +45,54 @@ impl ActiveBb {
     }
 }
 
-pub fn lower_body(name: String, fd: &ast::FunctionDefinition) -> anyhow::Result<CfgBody> {
-    let mut ctx = LowerCtx::new(name);
+pub fn lower_statics(decl: &ast::Declaration, statics: &mut CfgStatics) -> anyhow::Result<()> {
+    for decls in &decl.declarators {
+        if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
+            let name = id.node.name.clone();
+            let mut ret_ownership = None;
+            let mut param_ownerships = vec![];
+            let mut is_function = false;
+
+            for derived_decl in &decls.node.declarator.node.derived {
+                match &derived_decl.node {
+                    lang_c::ast::DerivedDeclarator::Pointer(_) => {
+                        ret_ownership =
+                            extract_ownership_from_derived_declarator(&derived_decl.node)?;
+                    }
+                    lang_c::ast::DerivedDeclarator::Function(fnd) => {
+                        is_function = true;
+                        for param in &fnd.node.parameters {
+                            let param_ownership = match &param.node.declarator {
+                                Some(pdecl) => extract_ownership_from_declarator(&pdecl.node)?,
+                                None => None,
+                            };
+                            param_ownerships.push(param_ownership);
+                        }
+                    }
+                    _ => (),
+                }
+            }
+
+            let sttc = if is_function {
+                Static::Function(ret_ownership, param_ownerships)
+            } else {
+                Static::Variable(ret_ownership)
+            };
+
+            let idx = statics.statics.alloc(sttc.into());
+            statics.name_to_static.insert(name, idx);
+        }
+    }
+
+    Ok(())
+}
+
+pub fn lower_body<'a>(
+    name: String,
+    fd: &ast::FunctionDefinition,
+    statics: &'a CfgStatics,
+) -> anyhow::Result<CfgBody<'a>> {
+    let mut ctx = LowerCtx::new(name, statics);
     ctx.add_argument_locals(&fd.declarator.node.derived);
     let start = ctx.new_basic_block();
     let mut active_bb = ActiveBb::new(start);
@@ -54,20 +100,20 @@ pub fn lower_body(name: String, fd: &ast::FunctionDefinition) -> anyhow::Result<
     Ok(ctx.result)
 }
 
-struct LowerCtx {
-    result: CfgBody,
-    name_to_local: HashMap<String, Idx<Local>>,
+struct LowerCtx<'a> {
+    result: CfgBody<'a>,
 }
 
-impl LowerCtx {
-    fn new(name: String) -> LowerCtx {
+impl<'a> LowerCtx<'a> {
+    fn new(name: String, statics: &CfgStatics) -> LowerCtx {
         LowerCtx {
             result: CfgBody {
                 basic_blocks: Arena::new(),
                 locals: Arena::new(),
                 name,
+                statics,
+                name_to_local: HashMap::new(),
             },
-            name_to_local: HashMap::new(),
         }
     }
 
@@ -328,7 +374,14 @@ impl LowerCtx {
     }
 
     fn resolve_identifier(&self, id: &ast::Identifier) -> anyhow::Result<Idx<Local>> {
-        match self.name_to_local.get(&id.name) {
+        match self.result.name_to_local.get(&id.name) {
+            Some(x) => Ok(*x),
+            None => bail!("unresolved name {}", id.name),
+        }
+    }
+
+    fn resolve_identifier_static(&self, id: &ast::Identifier) -> anyhow::Result<Idx<Static>> {
+        match self.result.statics.name_to_static.get(&id.name) {
             Some(x) => Ok(*x),
             None => bail!("unresolved name {}", id.name),
         }
@@ -344,12 +397,23 @@ impl LowerCtx {
         }
     }
 
-    fn push_assignment(&mut self, place: Place, rvalue: Rvalue, active_bb: &mut ActiveBb, span: Span) -> Place {
+    fn push_assignment(
+        &mut self,
+        place: Place,
+        rvalue: Rvalue,
+        active_bb: &mut ActiveBb,
+        span: Span,
+    ) -> Place {
         self.push_statement(Statement::Assign(place.clone(), rvalue, span), active_bb);
         place
     }
 
-    fn push_temp_assignment(&mut self, rvalue: Rvalue, active_bb: &mut ActiveBb, span: Span) -> Place {
+    fn push_temp_assignment(
+        &mut self,
+        rvalue: Rvalue,
+        active_bb: &mut ActiveBb,
+        span: Span,
+    ) -> Place {
         let place = self.temp_local().into();
         self.push_assignment(place, rvalue, active_bb, span)
     }
@@ -358,25 +422,36 @@ impl LowerCtx {
         let idx = self
             .result
             .locals
-            .alloc(Local::new(LocalKind::Named(name.to_string())));
+            .alloc(Local::new(LocalKind::Named(name.to_string()), None));
         self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
-        self.name_to_local.insert(name.to_string(), idx);
+        self.result.name_to_local.insert(name.to_string(), idx);
         idx
     }
 
     fn temp_local(&mut self) -> Idx<Local> {
-        let idx = self.result.locals.alloc(Local::new(LocalKind::Anonymous));
+        let idx = self
+            .result
+            .locals
+            .alloc(Local::new(LocalKind::Anonymous, None));
         self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
         idx
     }
 
     fn return_local(&mut self) -> Idx<Local> {
-        let idx = self.result.locals.alloc(Local::new(LocalKind::ReturnSlot));
+        let idx = self
+            .result
+            .locals
+            .alloc(Local::new(LocalKind::ReturnSlot, None));
         self.result.locals.iter_mut().last().unwrap().1.idx = Some(idx);
         idx
     }
 
-    fn rvalue_to_operand(&mut self, rvalue: Rvalue, active_bb: &mut ActiveBb, span: Span) -> Operand {
+    fn rvalue_to_operand(
+        &mut self,
+        rvalue: Rvalue,
+        active_bb: &mut ActiveBb,
+        span: Span,
+    ) -> Operand {
         match rvalue {
             Rvalue::Use(value) => value,
             _ => {
@@ -386,7 +461,12 @@ impl LowerCtx {
         }
     }
 
-    fn rvalue_to_operand_place(&mut self, rvalue: Rvalue, active_bb: &mut ActiveBb, span: Span) -> Place {
+    fn rvalue_to_operand_place(
+        &mut self,
+        rvalue: Rvalue,
+        active_bb: &mut ActiveBb,
+        span: Span,
+    ) -> Place {
         match rvalue {
             Rvalue::Use(Operand::Place(place)) => place,
             _ => self.push_temp_assignment(rvalue, active_bb, span),
@@ -402,7 +482,10 @@ impl LowerCtx {
             ast::Expression::Identifier(id) => {
                 let operand = match self.resolve_identifier(&id.node) {
                     Ok(local) => Operand::Place(local.into()),
-                    Err(_) => Operand::External(id.node.name.clone()),
+                    Err(_) => match self.resolve_identifier_static(&id.node) {
+                        Ok(sttc) => Operand::Place(sttc.into()),
+                        Err(_) => bail!("Undefined identifier {}", &id.node.name),
+                    },
                 };
                 Ok(Rvalue::Use(operand))
             }
@@ -471,13 +554,11 @@ impl LowerCtx {
             ))),
             ast::Expression::UnaryOperator(unary) => match &unary.node.operator.node {
                 ast::UnaryOperator::Address => {
-                    let operand =
-                        self.expr_to_operand_place(&unary.node.operand, active_bb)?;
+                    let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     Ok(Rvalue::Ref(operand))
                 }
                 ast::UnaryOperator::PostIncrement => {
-                    let operand =
-                        self.expr_to_operand_place(&unary.node.operand, active_bb)?;
+                    let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_assignment(
                         operand.clone(),
                         Rvalue::BinaryOp(
@@ -491,8 +572,7 @@ impl LowerCtx {
                     Ok(Rvalue::Use(Operand::Place(place)))
                 }
                 ast::UnaryOperator::PostDecrement => {
-                    let operand =
-                        self.expr_to_operand_place(&unary.node.operand, active_bb)?;
+                    let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_assignment(
                         operand.clone(),
                         Rvalue::BinaryOp(
@@ -506,8 +586,7 @@ impl LowerCtx {
                     Ok(Rvalue::Use(Operand::Place(place)))
                 }
                 ast::UnaryOperator::PreIncrement => {
-                    let operand =
-                        self.expr_to_operand_place(&unary.node.operand, active_bb)?;
+                    let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_temp_assignment(
                         Rvalue::Use(Operand::Place(operand.clone())),
                         active_bb,
@@ -526,8 +605,7 @@ impl LowerCtx {
                     Ok(Rvalue::Use(Operand::Place(place)))
                 }
                 ast::UnaryOperator::PreDecrement => {
-                    let operand =
-                        self.expr_to_operand_place(&unary.node.operand, active_bb)?;
+                    let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_temp_assignment(
                         Rvalue::Use(Operand::Place(operand.clone())),
                         active_bb,
@@ -562,7 +640,13 @@ impl LowerCtx {
                 let destination = self.temp_local();
                 let new_bb = self.new_basic_block();
                 self.set_terminator(
-                    Terminator::Call { callee, args, return_place: destination.into(), target: new_bb, span: call.span },
+                    Terminator::Call {
+                        callee,
+                        args,
+                        return_place: destination.into(),
+                        target: new_bb,
+                        span: call.span,
+                    },
                     active_bb.idx,
                 );
                 active_bb.switch(new_bb);
@@ -640,5 +724,62 @@ impl LowerCtx {
                 imaginary: false,
             },
         })))
+    }
+}
+
+fn extract_ownership_from_declarator(decl: &ast::Declarator) -> anyhow::Result<Option<Ownership>> {
+    let mut ownership = None;
+
+    for derived in &decl.derived {
+        let temp = extract_ownership_from_derived_declarator(&derived.node)?;
+
+        if temp.is_some() {
+            if ownership.is_some() {
+                bail!("Multiple ownership qualifiers are not allowed");
+            }
+        }
+
+        ownership = temp;
+    }
+
+    Ok(ownership)
+}
+
+fn extract_ownership_from_derived_declarator(
+    decl: &ast::DerivedDeclarator,
+) -> anyhow::Result<Option<Ownership>> {
+    let mut ownership = None;
+    match decl {
+        ast::DerivedDeclarator::Pointer(pqs) => {
+            for pq in pqs {
+                let temp = extract_ownership_from_pointer_qualifier(&pq.node);
+
+                if temp.is_some() {
+                    if ownership.is_some() {
+                        bail!("Multiple ownership qualifiers are not allowed");
+                    }
+
+                    ownership = temp;
+                }
+            }
+        }
+        _ => (),
+    };
+
+    Ok(ownership)
+}
+
+fn extract_ownership_from_pointer_qualifier(
+    qualifier: &ast::PointerQualifier,
+) -> Option<Ownership> {
+    if let PointerQualifier::TypeQualifier(type_qualifier) = qualifier {
+        match type_qualifier.node {
+            ast::TypeQualifier::Owned => Some(Ownership::Owned),
+            ast::TypeQualifier::Borrowed => Some(Ownership::Borrowed),
+            ast::TypeQualifier::BorrowedMut => Some(Ownership::BorrowedMut),
+            _ => None,
+        }
+    } else {
+        None
     }
 }

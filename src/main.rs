@@ -1,11 +1,13 @@
-use std::{error, fs::read_to_string};
+use std::{collections::HashMap, error, fs::read_to_string};
 
 use ariadne::{Label, Report, Source};
+use cfg::CfgStatics;
+use la_arena::Arena;
 use lang_c::{
     ast::{DeclaratorKind, ExternalDeclaration, Identifier},
     driver::{parse, Config},
 };
-use lower::lower_body;
+use lower::{lower_body, lower_statics};
 
 use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn};
 
@@ -16,9 +18,14 @@ mod lower;
 fn main() {
     let config = Config::default();
     let ast = parse(&config, "examples/malloc_leak1.c").unwrap();
+    let mut statics = CfgStatics {
+        name_to_static: HashMap::new(),
+        statics: Arena::new(),
+    };
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
+                lower_statics(&decl.node, &mut statics);
                 for decls in &decl.node.declarators {
                     if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
                         Report::build(ariadne::ReportKind::Advice, "malloc_leak1.c", 0)
@@ -40,7 +47,7 @@ fn main() {
                     _ => unreachable!(),
                 };
 
-                match lower_body(name, &fd.node) {
+                match lower_body(name, &fd.node, &statics) {
                     Ok(cfg) => {
                         println!("{:#?}", cfg);
                         let errors = check_cfg(&cfg);
@@ -67,7 +74,7 @@ fn main() {
                                         )
                                         .finish()
                                         .eprint(("malloc_leak1.c", Source::from(&ast.source)));
-                                },
+                                }
                                 CheckError::LeakByReturn(LeakByReturn(own_span, return_span)) => {
                                     Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
                                         .with_message("Potential leak detected")

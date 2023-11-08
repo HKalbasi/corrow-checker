@@ -1,12 +1,21 @@
 use core::panic;
+use std::collections::HashMap;
 
 use la_arena::{Arena, Idx, RawIdx};
 use lang_c::span::Span;
 
 #[derive(Clone, PartialEq, Eq)]
+pub enum Ownership {
+    Owned,
+    Borrowed,
+    BorrowedMut,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct Local {
     pub kind: LocalKind,
     pub idx: Option<Idx<Local>>,
+    pub ownership: Option<Ownership>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -32,9 +41,19 @@ impl std::fmt::Debug for Local {
 }
 
 impl Local {
-    pub fn new(kind: LocalKind) -> Self {
-        Local { kind, idx: None }
+    pub fn new(kind: LocalKind, ownership: Option<Ownership>) -> Self {
+        Local {
+            kind,
+            idx: None,
+            ownership,
+        }
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub enum Static {
+    Variable(Option<Ownership>),
+    Function(Option<Ownership>, Vec<Option<Ownership>>),
 }
 
 pub fn return_slot() -> Idx<Local> {
@@ -49,15 +68,30 @@ pub enum Projection {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
+pub enum RawPlace {
+    Local(Idx<Local>),
+    Static(Idx<Static>),
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Place {
-    pub local: Idx<Local>,
+    pub raw: RawPlace,
     pub projections: Vec<Projection>,
 }
 
 impl From<Idx<Local>> for Place {
     fn from(local: Idx<Local>) -> Self {
         Place {
-            local,
+            raw: RawPlace::Local(local),
+            projections: vec![],
+        }
+    }
+}
+
+impl From<Idx<Static>> for Place {
+    fn from(sttc: Idx<Static>) -> Self {
+        Place {
+            raw: RawPlace::Static(sttc),
             projections: vec![],
         }
     }
@@ -65,16 +99,17 @@ impl From<Idx<Local>> for Place {
 
 impl std::fmt::Debug for Place {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut dbg = format!("_{}", self.local.into_raw().into_u32());
+        // let mut dbg = format!("_{}", self.local.into_raw().into_u32());
 
-        for (_, projection) in self.projections.iter().enumerate() {
-            dbg = match projection {
-                Projection::Deref => format!("&{}", dbg),
-                Projection::Field(name) => format!("{}.{}", dbg, name),
-                Projection::Index(index) => format!("{}[{:?}]", dbg, index),
-            };
-        }
-        f.write_str(&dbg)
+        // for (_, projection) in self.projections.iter().enumerate() {
+        //     dbg = match projection {
+        //         Projection::Deref => format!("&{}", dbg),
+        //         Projection::Field(name) => format!("{}.{}", dbg, name),
+        //         Projection::Index(index) => format!("{}[{:?}]", dbg, index),
+        //     };
+        // }
+        // f.write_str(&dbg)
+        Ok(())
     }
 }
 
@@ -144,7 +179,6 @@ impl std::fmt::Debug for BinaryOpKind {
 pub enum Operand {
     Place(Place),
     Constant(ConstOperand),
-    External(String),
 }
 
 impl std::fmt::Debug for Operand {
@@ -152,7 +186,6 @@ impl std::fmt::Debug for Operand {
         match self {
             Self::Place(place) => write!(f, "{:?}", place),
             Self::Constant(constant) => write!(f, "{:?}", constant),
-            Self::External(name) => f.write_str(name),
         }
     }
 }
@@ -244,7 +277,13 @@ impl std::fmt::Debug for Terminator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Terminator::Return(_) => f.write_str("return"),
-            Terminator::Call { callee, args, return_place, target, span: _ } => {
+            Terminator::Call {
+                callee,
+                args,
+                return_place,
+                target,
+                span: _,
+            } => {
                 write!(f, "{:?} = {:?}(", return_place, callee)?;
                 for (i, arg) in args.iter().enumerate() {
                     write!(f, "{:?}", arg)?;
@@ -279,6 +318,12 @@ impl std::fmt::Debug for Terminator {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct CfgStatics {
+    pub statics: Arena<Static>,
+    pub name_to_static: HashMap<String, Idx<Static>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub struct BasicBlock {
     /// List of statements in this block.
@@ -296,13 +341,15 @@ pub struct BasicBlock {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct CfgBody {
+pub struct CfgBody<'a> {
     pub basic_blocks: Arena<BasicBlock>,
     pub locals: Arena<Local>,
     pub name: String,
+    pub statics: &'a CfgStatics,
+    pub name_to_local: HashMap<String, Idx<Local>>,
 }
 
-impl std::fmt::Debug for CfgBody {
+impl<'a> std::fmt::Debug for CfgBody<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "fn {}() {{", self.name)?;
         for (_, local) in self.locals.iter() {
@@ -321,7 +368,7 @@ impl std::fmt::Debug for CfgBody {
             if let Some(terminator) = &bb.terminator {
                 writeln!(f, "        {:?}", terminator)?;
             } else {
-                writeln!(f, "        This basic block has no terminator, which is wrong out of construction")?;    
+                writeln!(f, "        This basic block has no terminator, which is wrong out of construction")?;
             }
 
             writeln!(f, "    }}")?;

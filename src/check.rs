@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crepe::crepe;
 use la_arena::ArenaMap;
 
-use crate::cfg::{CfgBody, Operand, Place, Statement, Terminator, Rvalue};
+use crate::cfg::{CfgBody, Operand, Place, RawPlace, Rvalue, Statement, Terminator};
 use lang_c::span::Span;
 
 crepe! {
@@ -114,9 +114,8 @@ impl CrepeFiller {
                                 Operand::Place(p2) => {
                                     let p2 = self.place_id_of(p2);
                                     self.crepe.assign.push(Assign(p, p2, nn));
-                                },
+                                }
                                 Operand::Constant(_) => (),
-                                Operand::External(_) => (),
                             },
                             Rvalue::Ref(_) => (),
                             Rvalue::BinaryOp(_, _, _) => (),
@@ -133,19 +132,31 @@ impl CrepeFiller {
             match terminator {
                 Terminator::Return(span) => {
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);
-                    self.crepe.controlflowreturns.push(ControlFlowReturns(end_of_block[bb], *span));
+                    self.crepe
+                        .controlflowreturns
+                        .push(ControlFlowReturns(end_of_block[bb], *span));
                 }
-                Terminator::Call { callee, args: _, return_place: p, target, span } => {
+                Terminator::Call {
+                    callee,
+                    args: _,
+                    return_place: p,
+                    target,
+                    span,
+                } => {
                     let n1 = self.add_node();
                     let n2 = self.add_node();
                     let p = self.place_id_of(p);
                     self.crepe
                         .placeprevvaluelostbyassign
                         .push(PlacePrevValueLostByAssign(p, n1, *span));
-                    if *callee == Operand::External("malloc".to_string()) {
-                        self.crepe
-                            .placefilledbyownedvalue
-                            .push(PlaceFilledByOwnedValue(p, n2, *span));
+                    if let Operand::Place(place) = callee {
+                        if let RawPlace::Static(idx) = &place.raw {
+                            if cfg.statics.name_to_static.contains_key("malloc") {
+                                self.crepe
+                                    .placefilledbyownedvalue
+                                    .push(PlaceFilledByOwnedValue(p, n2, *span));
+                            }
+                        }
                     }
                     self.add_control_flow_link(before_terminator[bb], n1);
                     self.add_control_flow_link(n1, n2);
