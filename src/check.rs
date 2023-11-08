@@ -35,23 +35,27 @@ crepe! {
 
     @input
     #[derive(Debug)]
-    struct Assign(PlaceId, PlaceId, NodeId);
+    struct OwnershipLeft(PlaceId, NodeId, Span);
 
-    struct PlaceOwnValue(PlaceId, NodeId, Span);
+    @input
+    #[derive(Debug)]
+    struct Assign(PlaceId, PlaceId, NodeId, Span);
+
+    struct PlaceOwnValue(PlaceId, NodeId, Span, Option<Span>);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByAssign(pub Span, pub Span);
+    pub struct LeakByAssign(pub Span, pub Option<Span>, pub Span);
 
     @output
     #[derive(Debug)]
-    pub struct LeakByReturn(pub Span, pub Span);
+    pub struct LeakByReturn(pub Span, pub Option<Span>, pub Span);
 
-    PlaceOwnValue(p, n, span) <- PlaceFilledByOwnedValue(p, n, span);
-    PlaceOwnValue(p, n, span) <- PlaceOwnValue(p2, n, span), Assign(p, p2, n);
-    PlaceOwnValue(p, n, span) <- PlaceOwnValue(p, n1, span), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1);
-    LeakByAssign(own_span, lost_span) <- PlaceOwnValue(p, n1, own_span), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
-    LeakByReturn(own_span, return_span) <- PlaceOwnValue(_, n, own_span), ControlFlowReturns(n, return_span);
+    PlaceOwnValue(p, n, intro_span, None) <- PlaceFilledByOwnedValue(p, n, intro_span);
+    PlaceOwnValue(p, n, intro_span, Some(move_span)) <- PlaceOwnValue(p2, n, intro_span, _), Assign(p, p2, n, move_span);
+    PlaceOwnValue(p, n, intro_span, move_span) <- PlaceOwnValue(p, n1, intro_span, move_span), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1, _), !OwnershipLeft(p, n1, _);
+    LeakByAssign(own_intro_span, own_move_span, lost_span) <- PlaceOwnValue(p, n1, own_intro_span, own_move_span), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
+    LeakByReturn(own_intro_span, own_move_span, return_span) <- PlaceOwnValue(_, n, own_intro_span, own_move_span), ControlFlowReturns(n, return_span);
 }
 
 #[derive(Debug)]
@@ -115,7 +119,7 @@ impl CrepeFiller {
                             Rvalue::Use(p2) => match p2 {
                                 Operand::Place(p2) => {
                                     let p2 = self.place_id_of(p2);
-                                    self.crepe.assign.push(Assign(p, p2, nn));
+                                    self.crepe.assign.push(Assign(p, p2, nn, *span));
                                 }
                                 Operand::Constant(_) => (),
                             },
@@ -140,7 +144,7 @@ impl CrepeFiller {
                 }
                 Terminator::Call {
                     callee,
-                    args: _,
+                    args,
                     return_place: p,
                     target,
                     span,
@@ -151,13 +155,29 @@ impl CrepeFiller {
                     self.crepe
                         .placeprevvaluelostbyassign
                         .push(PlacePrevValueLostByAssign(p, n1, *span));
+
                     if let Operand::Place(place) = callee {
                         if let RawPlace::Static(idx) = &place.raw {
                             let sttc = &cfg.statics.statics[idx.clone()];
-                            if let Static::Function(Some(Ownership::Owned), _) = sttc {
-                                self.crepe
-                                    .placefilledbyownedvalue
-                                    .push(PlaceFilledByOwnedValue(p, n2, *span));
+                            if let Static::Function(ret, params) = sttc {
+                                if let Some(Ownership::Owned) = ret {
+                                    self.crepe
+                                        .placefilledbyownedvalue
+                                        .push(PlaceFilledByOwnedValue(p, n2, *span));
+                                }
+
+                                for (i, arg) in args.iter().enumerate() {
+                                    if let Operand::Place(ref arg_place) = arg.0 {
+                                        if let Some(Some(Ownership::Owned)) = params.get(i) {
+                                            let arg_place_id = self.place_id_of(arg_place);
+                                            self.crepe.ownershipleft.push(OwnershipLeft(
+                                                arg_place_id,
+                                                n1,
+                                                arg.1,
+                                            ))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

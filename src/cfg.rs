@@ -264,7 +264,7 @@ pub enum Terminator {
     Return(Span),
     Call {
         callee: Operand,
-        args: Vec<Operand>,
+        args: Vec<Argument>,
         return_place: Place,
         target: Idx<BasicBlock>,
         span: Span,
@@ -272,6 +272,9 @@ pub enum Terminator {
     Goto(Idx<BasicBlock>),
     SwitchInt(Operand, Vec<u128>, Vec<Idx<BasicBlock>>),
 }
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct Argument(pub Operand, pub Span);
 
 impl std::fmt::Debug for Terminator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -286,7 +289,7 @@ impl std::fmt::Debug for Terminator {
             } => {
                 write!(f, "{:?} = {:?}(", return_place, callee)?;
                 for (i, arg) in args.iter().enumerate() {
-                    write!(f, "{:?}", arg)?;
+                    write!(f, "{:?}", arg.0)?;
                     if i != args.len() - 1 {
                         f.write_str(", ")?;
                     }

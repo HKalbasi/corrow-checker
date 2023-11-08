@@ -9,11 +9,15 @@ use lang_c::{
 };
 use lower::{lower_body, lower_statics};
 
-use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn};
+use crate::{
+    check::{check_cfg, CheckError, LeakByAssign, LeakByReturn},
+    utils::SpanUtils,
+};
 
 mod cfg;
 mod check;
 mod lower;
+mod utils;
 
 fn main() {
     let config = Config::default();
@@ -53,29 +57,53 @@ fn main() {
                         let errors = check_cfg(&cfg);
                         for error in errors {
                             match error {
-                                CheckError::LeakByAssign(LeakByAssign(own_span, lost_span)) => {
-                                    Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
+                                CheckError::LeakByAssign(LeakByAssign(
+                                    own_intro_span,
+                                    own_moved_span,
+                                    lost_span,
+                                )) => {
+                                    let mut builder = Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
                                         .with_message("Potential leak detected")
                                         .with_label(
                                             Label::new((
                                                 "malloc_leak1.c",
-                                                own_span.start..own_span.end,
+                                                own_intro_span.start..own_intro_span.end,
                                             ))
                                             .with_message("Ownership of the value transferred to this function here")
                                             .with_color(ariadne::Color::Cyan),
-                                        )
+                                        );
+
+                                    if let Some(own_moved_span) = own_moved_span {
+                                        if !own_moved_span.contains(&own_intro_span) {
+                                            builder.add_label(Label::new((
+                                                    "malloc_leak1.c",
+                                                    own_moved_span.start..own_moved_span.end,
+                                                ))
+                                                .with_message("Ownership of the value transferred to this place here")
+                                                .with_color(ariadne::Color::Cyan)
+                                            )
+                                        }
+                                    }
+
+                                    builder
                                         .with_label(
                                             Label::new((
                                                 "malloc_leak1.c",
                                                 lost_span.start..lost_span.end,
                                             ))
-                                            .with_message("Ownership handle lost without proper destruction")
+                                            .with_message(
+                                                "Ownership handle lost without proper destruction",
+                                            )
                                             .with_color(ariadne::Color::Red),
                                         )
                                         .finish()
                                         .eprint(("malloc_leak1.c", Source::from(&ast.source)));
                                 }
-                                CheckError::LeakByReturn(LeakByReturn(own_span, return_span)) => {
+                                CheckError::LeakByReturn(LeakByReturn(
+                                    own_span,
+                                    _,
+                                    return_span,
+                                )) => {
                                     Report::build(ariadne::ReportKind::Error, "malloc_leak1.c", 0)
                                         .with_message("Potential leak detected")
                                         .with_label(

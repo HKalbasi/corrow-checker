@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::cfg::{
-    return_slot, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local, LocalKind,
-    Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
+    return_slot, Argument, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local,
+    LocalKind, Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
 };
 use anyhow::bail;
 use la_arena::{Arena, Idx};
@@ -635,8 +635,11 @@ impl<'a> LowerCtx<'a> {
                     .node
                     .arguments
                     .iter()
-                    .map(|x| self.expr_to_operand(&x, active_bb))
-                    .collect::<anyhow::Result<Vec<Operand>>>()?;
+                    .map(|x| {
+                        self.expr_to_operand(&x, active_bb)
+                            .map(|op| Argument(op, x.span))
+                    })
+                    .collect::<anyhow::Result<Vec<Argument>>>()?;
                 let destination = self.temp_local();
                 let new_bb = self.new_basic_block();
                 self.set_terminator(
