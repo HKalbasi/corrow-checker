@@ -79,6 +79,15 @@ pub struct Place {
     pub projections: Vec<Projection>,
 }
 
+impl Place {
+    pub fn without_projections(&self) -> Place {
+        Place {
+            raw: self.raw.clone(),
+            projections: vec![],
+        }
+    }
+}
+
 impl From<Idx<Local>> for Place {
     fn from(local: Idx<Local>) -> Self {
         Place {
@@ -177,15 +186,15 @@ impl std::fmt::Debug for BinaryOpKind {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Operand {
-    Place(Place),
-    Constant(ConstOperand),
+    Place(Place, Span),
+    Constant(ConstOperand, Span),
 }
 
 impl std::fmt::Debug for Operand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Place(place) => write!(f, "{:?}", place),
-            Self::Constant(constant) => write!(f, "{:?}", constant),
+            Self::Place(place, _) => write!(f, "{:?}", place),
+            Self::Constant(constant, _) => write!(f, "{:?}", constant),
         }
     }
 }
@@ -248,13 +257,19 @@ impl std::fmt::Debug for ConstOperand {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Statement {
-    Assign(Place, Rvalue, Span),
+    Assign(
+        Place,
+        Rvalue,
+        Span,
+        Span, /* lhs_span */
+        Span, /* rhs_span */
+    ),
 }
 
 impl std::fmt::Debug for Statement {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Assign(lhs, rhs, _) => write!(f, "{:#?} = {:#?}", lhs, rhs),
+            Self::Assign(lhs, rhs, _, _, _) => write!(f, "{:#?} = {:#?}", lhs, rhs),
         }
     }
 }
@@ -264,7 +279,7 @@ pub enum Terminator {
     Return(Span),
     Call {
         callee: Operand,
-        args: Vec<Argument>,
+        args: Vec<Operand>,
         return_place: Place,
         target: Idx<BasicBlock>,
         span: Span,
@@ -272,9 +287,6 @@ pub enum Terminator {
     Goto(Idx<BasicBlock>),
     SwitchInt(Operand, Vec<u128>, Vec<Idx<BasicBlock>>),
 }
-
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub struct Argument(pub Operand, pub Span);
 
 impl std::fmt::Debug for Terminator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -285,11 +297,11 @@ impl std::fmt::Debug for Terminator {
                 args,
                 return_place,
                 target,
-                span: _,
+                ..
             } => {
                 write!(f, "{:?} = {:?}(", return_place, callee)?;
                 for (i, arg) in args.iter().enumerate() {
-                    write!(f, "{:?}", arg.0)?;
+                    write!(f, "{:?}", arg)?;
                     if i != args.len() - 1 {
                         f.write_str(", ")?;
                     }

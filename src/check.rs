@@ -41,6 +41,12 @@ crepe! {
     #[derive(Debug)]
     struct Assign(PlaceId, PlaceId, NodeId, Span);
 
+    @input
+    #[derive(Debug)]
+    struct PlaceUsed(PlaceId, NodeId, Span);
+
+    struct PlaceMayDangle(PlaceId, NodeId, Span);
+
     struct PlaceOwnValue(PlaceId, NodeId, Span, Option<Span>);
 
     @output
@@ -51,17 +57,28 @@ crepe! {
     #[derive(Debug)]
     pub struct LeakByReturn(pub Span, pub Option<Span>, pub Span);
 
+    @output
+    #[derive(Debug)]
+    pub struct UseAfterMove(pub Span, pub Span);
+
     PlaceOwnValue(p, n, intro_span, None) <- PlaceFilledByOwnedValue(p, n, intro_span);
     PlaceOwnValue(p, n, intro_span, Some(move_span)) <- PlaceOwnValue(p2, n, intro_span, _), Assign(p, p2, n, move_span);
     PlaceOwnValue(p, n, intro_span, move_span) <- PlaceOwnValue(p, n1, intro_span, move_span), ControlFlowGoes(n1, n), !PlacePrevValueLostByAssign(p, n, _), !Assign(_, p, n1, _), !OwnershipLeft(p, n1, _);
+
+    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _, _), Assign(_, p, n, lost_span);
+    PlaceMayDangle(p, n, lost_span) <- PlaceOwnValue(p, n, _, _), OwnershipLeft(p, n, lost_span);
+    PlaceMayDangle(p, n, lost_span) <- PlaceMayDangle(p, n1, lost_span), ControlFlowGoes(n1, n), !Assign(p, _, n, _);
+
     LeakByAssign(own_intro_span, own_move_span, lost_span) <- PlaceOwnValue(p, n1, own_intro_span, own_move_span), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
     LeakByReturn(own_intro_span, own_move_span, return_span) <- PlaceOwnValue(_, n, own_intro_span, own_move_span), ControlFlowReturns(n, return_span);
+    UseAfterMove(move_span, use_span) <- PlaceMayDangle(p, n1, move_span), ControlFlowGoes(n1, n), PlaceUsed(p, n, use_span);
 }
 
 #[derive(Debug)]
 pub enum CheckError {
     LeakByAssign(LeakByAssign),
     LeakByReturn(LeakByReturn),
+    UseAfterMove(UseAfterMove),
 }
 
 #[derive(Default)]
@@ -107,21 +124,27 @@ impl CrepeFiller {
             for stmt in &bb_data.statements {
                 let mut nn = self.add_node();
                 match stmt {
-                    Statement::Assign(p, r, span) => {
-                        let p = self.place_id_of(p);
+                    Statement::Assign(place, r, span, lhs_span, rhs_span) => {
+                        let p = self.place_id_of(place);
                         self.crepe
                             .placeprevvaluelostbyassign
                             .push(PlacePrevValueLostByAssign(p, nn, *span));
+                        if place.projections.len() > 0 {
+                            let p = self.place_id_of(&place.without_projections());
+                            self.crepe.placeused.push(PlaceUsed(p, nn, *lhs_span));
+                        }
                         self.add_control_flow_link(cur, nn);
                         cur = nn;
                         nn = self.add_node();
+                        // TODO: handle ptr = NULL
                         match r {
                             Rvalue::Use(p2) => match p2 {
-                                Operand::Place(p2) => {
+                                Operand::Place(p2, _) => {
                                     let p2 = self.place_id_of(p2);
                                     self.crepe.assign.push(Assign(p, p2, nn, *span));
+                                    self.crepe.placeused.push(PlaceUsed(p2, nn, *rhs_span));
                                 }
-                                Operand::Constant(_) => (),
+                                Operand::Constant(..) => (),
                             },
                             Rvalue::Ref(_) => (),
                             Rvalue::BinaryOp(_, _, _) => (),
@@ -156,7 +179,13 @@ impl CrepeFiller {
                         .placeprevvaluelostbyassign
                         .push(PlacePrevValueLostByAssign(p, n1, *span));
 
-                    if let Operand::Place(place) = callee {
+                    self.add_place_use_if_applicable(callee, n1);
+
+                    for arg in args {
+                        self.add_place_use_if_applicable(arg, n1);
+                    }
+
+                    if let Operand::Place(place, _) = callee {
                         if let RawPlace::Static(idx) = &place.raw {
                             let sttc = &cfg.statics.statics[idx.clone()];
                             if let Static::Function(ret, params) = sttc {
@@ -167,13 +196,13 @@ impl CrepeFiller {
                                 }
 
                                 for (i, arg) in args.iter().enumerate() {
-                                    if let Operand::Place(ref arg_place) = arg.0 {
+                                    if let Operand::Place(arg_place, arg_span) = arg {
                                         if let Some(Some(Ownership::Owned)) = params.get(i) {
                                             let arg_place_id = self.place_id_of(arg_place);
                                             self.crepe.ownershipleft.push(OwnershipLeft(
                                                 arg_place_id,
                                                 n1,
-                                                arg.1,
+                                                *arg_span,
                                             ))
                                         }
                                     }
@@ -190,13 +219,21 @@ impl CrepeFiller {
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);
                     self.add_control_flow_link(end_of_block[bb], start_of_block[*target]);
                 }
-                Terminator::SwitchInt(_, _, targets) => {
+                Terminator::SwitchInt(operand, _, targets) => {
+                    self.add_place_use_if_applicable(operand, before_terminator[bb]);
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);
                     for target in targets {
                         self.add_control_flow_link(end_of_block[bb], start_of_block[*target]);
                     }
                 }
             }
+        }
+    }
+
+    fn add_place_use_if_applicable(&mut self, operand: &Operand, node_id: NodeId) {
+        if let Operand::Place(place, span) = operand {
+            let p = self.place_id_of(place);
+            self.crepe.placeused.push(PlaceUsed(p, node_id, *span));
         }
     }
 
@@ -214,10 +251,11 @@ impl CrepeFiller {
 
 pub fn check_cfg(cfg: &CfgBody) -> Vec<CheckError> {
     let datalog = CrepeFiller::build(cfg);
-    let (leak_by_assign, leak_by_return) = datalog.run();
+    let (leak_by_assign, leak_by_return, use_after_move) = datalog.run();
     leak_by_assign
         .into_iter()
         .map(CheckError::LeakByAssign)
         .chain(leak_by_return.into_iter().map(CheckError::LeakByReturn))
+        .chain(use_after_move.into_iter().map(CheckError::UseAfterMove))
         .collect()
 }

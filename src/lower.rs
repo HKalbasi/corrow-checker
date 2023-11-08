@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::cfg::{
-    return_slot, Argument, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local,
-    LocalKind, Operand, Ownership, Place, RawPlace, Rvalue, Statement, Static, Terminator,
+    return_slot, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local, LocalKind,
+    Operand, Ownership, Place, Rvalue, Statement, Static, Terminator,
 };
 use anyhow::bail;
 use la_arena::{Arena, Idx};
@@ -138,8 +138,15 @@ impl<'a> LowerCtx<'a> {
         match &statement.node {
             ast::Statement::Return(e) => {
                 if let Some(e) = e {
-                    let rvalue = self.expr_to_rvalue(&e.node, active_bb)?;
-                    self.push_assignment(return_slot().into(), rvalue, active_bb, e.span);
+                    let rvalue = self.expr_to_rvalue(&e, active_bb)?;
+                    self.push_assignment(
+                        return_slot().into(),
+                        rvalue,
+                        active_bb,
+                        e.span,
+                        e.span,
+                        e.span,
+                    );
                 }
                 self.set_terminator(Terminator::Return(statement.span), active_bb.idx);
                 Ok(())
@@ -163,7 +170,7 @@ impl<'a> LowerCtx<'a> {
             ast::Statement::Expression(expr) => {
                 let Some(expr) = expr else { return Ok(()) };
                 let old_bb = active_bb.idx;
-                let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
+                let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
                 self.push_discard_if_required(rvalue, active_bb, expr.span);
                 Ok(())
             }
@@ -198,7 +205,7 @@ impl<'a> LowerCtx<'a> {
                         match &fr.node.initializer.node {
                             ast::ForInitializer::Empty => unreachable!(),
                             ast::ForInitializer::Expression(expr) => {
-                                let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
+                                let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
                                 self.push_discard_if_required(rvalue, active_bb, fr.span);
                             }
                             ast::ForInitializer::Declaration(decl) => {
@@ -245,7 +252,7 @@ impl<'a> LowerCtx<'a> {
                 if let Some((step, bb)) = step_info {
                     let step_bb = bb;
                     active_bb.switch(step_bb);
-                    let rvalue = self.expr_to_rvalue(&step.node, active_bb)?;
+                    let rvalue = self.expr_to_rvalue(&step, active_bb)?;
                     self.push_discard_if_required(rvalue, active_bb, fr.span);
                     self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
                     continue_bb = step_bb;
@@ -360,8 +367,15 @@ impl<'a> LowerCtx<'a> {
             if let Some(init) = &declarator.node.initializer {
                 match &init.node {
                     ast::Initializer::Expression(expr) => {
-                        let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
-                        self.push_assignment(place.into(), rvalue, active_bb, init.span);
+                        let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
+                        self.push_assignment(
+                            place.into(),
+                            rvalue,
+                            active_bb,
+                            init.span,
+                            declarator.node.declarator.node.kind.span,
+                            init.span,
+                        );
                         return Ok(());
                     }
                     ast::Initializer::List(_) => {
@@ -403,8 +417,13 @@ impl<'a> LowerCtx<'a> {
         rvalue: Rvalue,
         active_bb: &mut ActiveBb,
         span: Span,
+        lhs_span: Span,
+        rhs_span: Span,
     ) -> Place {
-        self.push_statement(Statement::Assign(place.clone(), rvalue, span), active_bb);
+        self.push_statement(
+            Statement::Assign(place.clone(), rvalue, span, lhs_span, rhs_span),
+            active_bb,
+        );
         place
     }
 
@@ -415,7 +434,7 @@ impl<'a> LowerCtx<'a> {
         span: Span,
     ) -> Place {
         let place = self.temp_local().into();
-        self.push_assignment(place, rvalue, active_bb, span)
+        self.push_assignment(place, rvalue, active_bb, span, span, span)
     }
 
     fn named_local(&mut self, name: &str) -> Idx<Local> {
@@ -456,7 +475,7 @@ impl<'a> LowerCtx<'a> {
             Rvalue::Use(value) => value,
             _ => {
                 let temp = self.push_temp_assignment(rvalue, active_bb, span);
-                Operand::Place(temp)
+                Operand::Place(temp, span)
             }
         }
     }
@@ -468,22 +487,22 @@ impl<'a> LowerCtx<'a> {
         span: Span,
     ) -> Place {
         match rvalue {
-            Rvalue::Use(Operand::Place(place)) => place,
+            Rvalue::Use(Operand::Place(place, span)) => place,
             _ => self.push_temp_assignment(rvalue, active_bb, span),
         }
     }
 
     fn expr_to_rvalue(
         &mut self,
-        expr: &ast::Expression,
+        expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
     ) -> anyhow::Result<Rvalue> {
-        match expr {
+        match &expr.node {
             ast::Expression::Identifier(id) => {
                 let operand = match self.resolve_identifier(&id.node) {
-                    Ok(local) => Operand::Place(local.into()),
+                    Ok(local) => Operand::Place(local.into(), expr.span),
                     Err(_) => match self.resolve_identifier_static(&id.node) {
-                        Ok(sttc) => Operand::Place(sttc.into()),
+                        Ok(sttc) => Operand::Place(sttc.into(), expr.span),
                         Err(_) => bail!("Undefined identifier {}", &id.node.name),
                     },
                 };
@@ -495,13 +514,20 @@ impl<'a> LowerCtx<'a> {
                         let mut lhs = self.expr_to_operand_place(&bo.node.lhs, active_bb)?;
                         let rhs = self.expr_to_operand(&bo.node.rhs, active_bb)?;
                         lhs.projections.push(crate::cfg::Projection::Index(rhs));
-                        Rvalue::Use(Operand::Place(lhs))
+                        Rvalue::Use(Operand::Place(lhs, expr.span))
                     }
                     ast::BinaryOperator::Assign => {
                         let lhs = self.expr_to_operand_place(&bo.node.lhs, active_bb)?;
-                        let rhs = self.expr_to_rvalue(&bo.node.rhs.node, active_bb)?;
-                        let place = self.push_assignment(lhs, rhs, active_bb, bo.span);
-                        Rvalue::Use(Operand::Place(place))
+                        let rhs = self.expr_to_rvalue(&bo.node.rhs, active_bb)?;
+                        let place = self.push_assignment(
+                            lhs,
+                            rhs,
+                            active_bb,
+                            bo.span,
+                            bo.node.lhs.span,
+                            bo.node.rhs.span,
+                        );
+                        Rvalue::Use(Operand::Place(place, expr.span))
                     }
                     ast::BinaryOperator::LogicalAnd
                     | ast::BinaryOperator::LogicalOr
@@ -548,9 +574,11 @@ impl<'a> LowerCtx<'a> {
             }
             ast::Expression::Constant(constant) => Ok(Rvalue::Use(Operand::Constant(
                 ConstOperand::CConst(constant.node.clone()),
+                expr.span,
             ))),
             ast::Expression::StringLiteral(literals) => Ok(Rvalue::Use(Operand::Constant(
                 ConstOperand::StringLiteral(literals.node.clone()),
+                expr.span,
             ))),
             ast::Expression::UnaryOperator(unary) => match &unary.node.operator.node {
                 ast::UnaryOperator::Address => {
@@ -563,13 +591,15 @@ impl<'a> LowerCtx<'a> {
                         operand.clone(),
                         Rvalue::BinaryOp(
                             BinaryOpKind::Add,
-                            Operand::Place(operand.clone()),
-                            Self::integer_operand("1"),
+                            Operand::Place(operand.clone(), unary.node.operand.span),
+                            Self::integer_operand("1", expr.span),
                         ),
                         active_bb,
                         unary.span,
+                        unary.node.operand.span,
+                        unary.node.operator.span,
                     );
-                    Ok(Rvalue::Use(Operand::Place(place)))
+                    Ok(Rvalue::Use(Operand::Place(place, expr.span)))
                 }
                 ast::UnaryOperator::PostDecrement => {
                     let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
@@ -577,18 +607,20 @@ impl<'a> LowerCtx<'a> {
                         operand.clone(),
                         Rvalue::BinaryOp(
                             BinaryOpKind::Sub,
-                            Operand::Place(operand.clone()),
-                            Self::integer_operand("1"),
+                            Operand::Place(operand.clone(), unary.node.operand.span),
+                            Self::integer_operand("1", expr.span),
                         ),
                         active_bb,
                         unary.span,
+                        unary.node.operand.span,
+                        unary.node.operator.span,
                     );
-                    Ok(Rvalue::Use(Operand::Place(place)))
+                    Ok(Rvalue::Use(Operand::Place(place, expr.span)))
                 }
                 ast::UnaryOperator::PreIncrement => {
                     let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_temp_assignment(
-                        Rvalue::Use(Operand::Place(operand.clone())),
+                        Rvalue::Use(Operand::Place(operand.clone(), unary.node.operand.span)),
                         active_bb,
                         unary.span,
                     );
@@ -596,18 +628,20 @@ impl<'a> LowerCtx<'a> {
                         operand.clone(),
                         Rvalue::BinaryOp(
                             BinaryOpKind::Add,
-                            Operand::Place(operand.clone()),
-                            Self::integer_operand("1"),
+                            Operand::Place(operand.clone(), unary.node.operand.span),
+                            Self::integer_operand("1", expr.span),
                         ),
                         active_bb,
                         unary.span,
+                        unary.node.operand.span,
+                        unary.node.operator.span,
                     );
-                    Ok(Rvalue::Use(Operand::Place(place)))
+                    Ok(Rvalue::Use(Operand::Place(place, expr.span)))
                 }
                 ast::UnaryOperator::PreDecrement => {
                     let operand = self.expr_to_operand_place(&unary.node.operand, active_bb)?;
                     let place = self.push_temp_assignment(
-                        Rvalue::Use(Operand::Place(operand.clone())),
+                        Rvalue::Use(Operand::Place(operand.clone(), unary.node.operand.span)),
                         active_bb,
                         unary.span,
                     );
@@ -615,13 +649,15 @@ impl<'a> LowerCtx<'a> {
                         operand.clone(),
                         Rvalue::BinaryOp(
                             BinaryOpKind::Sub,
-                            Operand::Place(operand.clone()),
-                            Self::integer_operand("1"),
+                            Operand::Place(operand.clone(), expr.span),
+                            Self::integer_operand("1", expr.span),
                         ),
                         active_bb,
                         unary.span,
+                        unary.node.operand.span,
+                        unary.node.operator.span,
                     );
-                    Ok(Rvalue::Use(Operand::Place(place)))
+                    Ok(Rvalue::Use(Operand::Place(place, expr.span)))
                 }
                 ast::UnaryOperator::Indirection => todo!(),
                 ast::UnaryOperator::Plus => todo!(),
@@ -635,11 +671,8 @@ impl<'a> LowerCtx<'a> {
                     .node
                     .arguments
                     .iter()
-                    .map(|x| {
-                        self.expr_to_operand(&x, active_bb)
-                            .map(|op| Argument(op, x.span))
-                    })
-                    .collect::<anyhow::Result<Vec<Argument>>>()?;
+                    .map(|x| self.expr_to_operand(&x, active_bb))
+                    .collect::<anyhow::Result<Vec<Operand>>>()?;
                 let destination = self.temp_local();
                 let new_bb = self.new_basic_block();
                 self.set_terminator(
@@ -653,7 +686,7 @@ impl<'a> LowerCtx<'a> {
                     active_bb.idx,
                 );
                 active_bb.switch(new_bb);
-                Ok(Rvalue::Use(Operand::Place(destination.into())))
+                Ok(Rvalue::Use(Operand::Place(destination.into(), call.span)))
             }
             ast::Expression::GenericSelection(_)
             | ast::Expression::Member(_)
@@ -675,8 +708,15 @@ impl<'a> LowerCtx<'a> {
         expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
     ) -> anyhow::Result<Operand> {
-        let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
-        Ok(self.rvalue_to_operand(rvalue, active_bb, expr.span))
+        let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
+        Ok(self.rvalue_to_operand(
+            rvalue,
+            active_bb,
+            Span {
+                start: expr.span.start + 1,
+                end: expr.span.end,
+            },
+        ))
     }
 
     fn expr_to_operand_place(
@@ -684,7 +724,7 @@ impl<'a> LowerCtx<'a> {
         expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
     ) -> anyhow::Result<Place> {
-        let rvalue = self.expr_to_rvalue(&expr.node, active_bb)?;
+        let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
         Ok(self.rvalue_to_operand_place(rvalue, active_bb, expr.span))
     }
 
@@ -717,16 +757,19 @@ impl<'a> LowerCtx<'a> {
         Ok(())
     }
 
-    pub fn integer_operand(number: &str) -> Operand {
-        Operand::Constant(ConstOperand::CConst(ast::Constant::Integer(ast::Integer {
-            base: ast::IntegerBase::Decimal,
-            number: number.into(),
-            suffix: IntegerSuffix {
-                size: ast::IntegerSize::Int,
-                unsigned: false,
-                imaginary: false,
-            },
-        })))
+    pub fn integer_operand(number: &str, span: Span) -> Operand {
+        Operand::Constant(
+            ConstOperand::CConst(ast::Constant::Integer(ast::Integer {
+                base: ast::IntegerBase::Decimal,
+                number: number.into(),
+                suffix: IntegerSuffix {
+                    size: ast::IntegerSize::Int,
+                    unsigned: false,
+                    imaginary: false,
+                },
+            })),
+            span,
+        )
     }
 }
 
