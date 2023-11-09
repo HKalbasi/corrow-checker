@@ -1,0 +1,10 @@
+Error: Potential use after move
+    ╭─[malloc_leak1.c:1:1]
+    │
+ 32 │     int *p2 = p1;
+    │             ──┬─  
+    │               ╰─── The value is moved here
+ 33 │     free(p1);
+    │          ─┬  
+    │           ╰── The value is used here after move
+────╯

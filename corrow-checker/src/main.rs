@@ -22,27 +22,33 @@ const TEST_FILE: &str = "malloc_leak1.c";
 
 fn main() {
     let config = Config::default();
-    let ast = parse(&config, format!("examples/{}", TEST_FILE)).unwrap();
+    let ast = parse(&config, std::env::args().nth(1).unwrap()).unwrap();
     let mut statics = CfgStatics {
         name_to_static: HashMap::new(),
         statics: Arena::new(),
     };
+    let debug_mode = false; // FIXME: make this a flag
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
                 lower_statics(&decl.node, &mut statics).unwrap();
                 for decls in &decl.node.declarators {
                     if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
-                        Report::build(ariadne::ReportKind::Advice, TEST_FILE, 0)
-                            .with_message(format!("there is a decl here named {}", id.node.name))
-                            .with_label(
-                                Label::new((TEST_FILE, id.span.start..id.span.end))
-                                    .with_message("it is here")
-                                    .with_color(ariadne::Color::Cyan),
-                            )
-                            .finish()
-                            .eprint((TEST_FILE, Source::from(&ast.source)))
-                            .unwrap();
+                        if debug_mode {
+                            Report::build(ariadne::ReportKind::Advice, TEST_FILE, 0)
+                                .with_message(format!(
+                                    "there is a decl here named {}",
+                                    id.node.name
+                                ))
+                                .with_label(
+                                    Label::new((TEST_FILE, id.span.start..id.span.end))
+                                        .with_message("it is here")
+                                        .with_color(ariadne::Color::Cyan),
+                                )
+                                .finish()
+                                .eprint((TEST_FILE, Source::from(&ast.source)))
+                                .unwrap();
+                        }
                     }
                 }
             }
@@ -55,8 +61,11 @@ fn main() {
 
                 match lower_body(name, &fd.node, &statics) {
                     Ok(cfg) => {
-                        println!("{:#?}", cfg);
-                        let errors = check_cfg(&cfg);
+                        if debug_mode {
+                            println!("{:#?}", cfg);
+                        }
+                        let mut errors = check_cfg(&cfg);
+                        errors.sort_by_key(CheckError::compare_for_stability);
                         for error in errors {
                             match error {
                                 CheckError::LeakByAssign(LeakByAssign(own_reason, lost_span)) => {
@@ -120,7 +129,7 @@ fn main() {
                         }
                     }
                     Err(error) => {
-                        println!("mir lowering failed: {}", error);
+                        eprintln!("mir lowering failed: {}", error);
                     }
                 }
             }

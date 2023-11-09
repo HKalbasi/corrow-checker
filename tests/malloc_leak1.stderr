@@ -1,0 +1,42 @@
+Error: Potential leak detected
+    ╭─[malloc_leak1.c:1:1]
+    │
+ 31 │     void *p1 = malloc(5);
+    │              ─────┬┬────  
+    │                   ╰─────── Ownership of the value transferred to this place here
+    │                    │      
+    │                    ╰────── Ownership of the value transferred to this function here
+    │ 
+ 33 │     p1 = p2;
+    │     ───┬───  
+    │        ╰───── Ownership handle lost without proper destruction
+────╯
+Error: Potential leak detected
+    ╭─[malloc_leak1.c:1:1]
+    │
+ 31 │     void *p1 = malloc(5);
+    │              ─────┬┬────  
+    │                   ╰─────── Ownership of the value transferred to this place here
+    │                    │      
+    │                    ╰────── Ownership of the value transferred to this function here
+ 32 │     void *p2 = p1;
+    │              ──┬─  
+    │                ╰─── Ownership of the value transferred to this place here
+    │ 
+ 34 │     p2 = p1;
+    │     ───┬───  
+    │        ╰───── Ownership handle lost without proper destruction
+────╯
+Error: Potential leak detected
+    ╭─[malloc_leak1.c:1:1]
+    │
+ 36 │     p2 = malloc(10);
+    │     ───────┬──┬────  
+    │            ╰───────── Ownership of the value transferred to this place here
+    │               │      
+    │               ╰────── Ownership of the value transferred to this function here
+    │ 
+ 40 │     return 0;
+    │     ────┬────  
+    │         ╰────── Function exited without proper destruction of that value
+────╯

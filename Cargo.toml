@@ -1,13 +1,10 @@
-[package]
-name = "corrow-checker"
-version = "0.1.0"
+[workspace]
+members = [
+    "corrow-checker",
+    "xtask",
+]
+resolver = "2"
+
+[workspace.package]
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-anyhow = "1.0.75"
-ariadne = "0.3.0"
-crepe = "0.1.8"
-la-arena = "0.3.1"
-lang-c = { git = "https://github.com/HKalbasi/lang-c.git" }
+license = "MIT OR Apache-2.0"

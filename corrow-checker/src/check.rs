@@ -75,11 +75,21 @@ crepe! {
     UseAfterMove(move_span, use_span) <- PlaceMayDangle(p, n1, move_span), ControlFlowGoes(n1, n), PlaceUsed(p, n, use_span);
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CheckError {
     LeakByAssign(LeakByAssign),
     LeakByReturn(LeakByReturn),
     UseAfterMove(UseAfterMove),
+}
+
+impl CheckError {
+    pub fn compare_for_stability(&self) -> impl Ord {
+        match self {
+            CheckError::LeakByAssign(e) => (1, e.1.start, e.1.end),
+            CheckError::LeakByReturn(e) => (1, e.1.start, e.1.end),
+            CheckError::UseAfterMove(e) => (1, e.1.start, e.1.end),
+        }
+    }
 }
 
 #[derive(Default)]

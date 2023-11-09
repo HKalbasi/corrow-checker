@@ -27,7 +27,9 @@ pub enum LocalKind {
 
 impl std::fmt::Debug for Local {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Some(idx) = self.idx else { return std::fmt::Result::Ok(()); };
+        let Some(idx) = self.idx else {
+            return std::fmt::Result::Ok(());
+        };
         write!(f, "var _{};", idx.into_raw().into_u32())?;
 
         match &self.kind {
