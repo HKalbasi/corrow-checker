@@ -1,7 +1,7 @@
 use ariadne::Label;
 use lang_c::span::Span;
 
-use crate::TEST_FILE;
+use crate::{lower::CfgLowerError, TEST_FILE};
 
 #[derive(Debug, Clone, Copy)]
 pub struct OwnershipReason([Option<(Span, OwnershipReasonItemKind)>; 10]);
@@ -58,6 +58,36 @@ impl OwnershipReason {
                         .with_color(ariadne::Color::Cyan),
                 ),
             }
+        }
+    }
+}
+
+impl CfgLowerError {
+    pub fn add_to_report(self, builder: &mut ReportBuilder<'_>) {
+        match self {
+            CfgLowerError::UnknownError(e) => {
+                builder.set_note(format!("The error message is: {e}"));
+            }
+            CfgLowerError::UndefinedIdentifier(span) => builder.add_label(
+                Label::new((TEST_FILE, span.start..span.end))
+                    .with_message("Undefined identifier")
+                    .with_color(ariadne::Color::Red),
+            ),
+            CfgLowerError::UnsupportedExpression(span) => builder.add_label(
+                Label::new((TEST_FILE, span.start..span.end))
+                    .with_message("Unsupported expression")
+                    .with_color(ariadne::Color::Magenta),
+            ),
+            CfgLowerError::UnsupportedStatement(span) => builder.add_label(
+                Label::new((TEST_FILE, span.start..span.end))
+                    .with_message("Unsupported statement")
+                    .with_color(ariadne::Color::Magenta),
+            ),
+            CfgLowerError::UnsupportedBinaryOperator(span) => builder.add_label(
+                Label::new((TEST_FILE, span.start..span.end))
+                    .with_message("Unsupported binary operator")
+                    .with_color(ariadne::Color::Magenta),
+            ),
         }
     }
 }

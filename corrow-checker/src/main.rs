@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, eprintln, process::exit};
 
 use ariadne::{Label, Report, Source};
 use cfg::CfgStatics;
+use clap::Parser;
 use la_arena::Arena;
 use lang_c::{
     ast::{DeclaratorKind, ExternalDeclaration},
@@ -20,14 +21,43 @@ mod utils;
 // const TEST_FILE: &str = "malloc_leak1.c";
 const TEST_FILE: &str = "malloc_leak1.c";
 
+#[derive(Parser)]
+struct CliOptions {
+    #[clap(
+        value_name = "INPUT",
+        required = true,
+        help = "Sets the input file to compile"
+    )]
+    input: String,
+
+    #[clap(long)]
+    debug_mode: bool,
+
+    #[clap(short = 'I')]
+    include_directories: Vec<String>,
+}
+
 fn main() {
-    let config = Config::default();
-    let ast = parse(&config, std::env::args().nth(1).unwrap()).unwrap();
+    let cli_options = CliOptions::parse();
+    let mut config = Config::default();
+    config.cpp_options.extend(
+        cli_options
+            .include_directories
+            .iter()
+            .map(|x| format!("-I{x}")),
+    );
+    let ast = match parse(&config, cli_options.input) {
+        Ok(x) => x,
+        Err(e) => {
+            eprintln!("Error in running the preprocessor:\n{e}");
+            exit(1);
+        }
+    };
     let mut statics = CfgStatics {
         name_to_static: HashMap::new(),
         statics: Arena::new(),
     };
-    let debug_mode = false; // FIXME: make this a flag
+    let debug_mode = cli_options.debug_mode;
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
@@ -129,7 +159,20 @@ fn main() {
                         }
                     }
                     Err(error) => {
-                        eprintln!("mir lowering failed: {}", error);
+                        let fn_span = fd.node.declarator.node.kind.span;
+                        let mut builder =
+                            Report::build(ariadne::ReportKind::Error, TEST_FILE, fn_span.start)
+                                .with_message("Cfg lowering failed");
+                        error.add_to_report(&mut builder);
+                        builder
+                            .with_label(
+                                Label::new((TEST_FILE, fn_span.start..fn_span.end))
+                                    .with_message("In this function")
+                                    .with_color(ariadne::Color::Red),
+                            )
+                            .finish()
+                            .eprint((TEST_FILE, Source::from(&ast.source)))
+                            .unwrap();
                     }
                 }
             }

@@ -4,12 +4,28 @@ use crate::cfg::{
     return_slot, BasicBlock, BinaryOpKind, CfgBody, CfgStatics, ConstOperand, Local, LocalKind,
     Operand, Ownership, Place, Rvalue, Statement, Static, Terminator,
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use la_arena::{Arena, Idx};
 use lang_c::{
     ast::{self, DeclaratorKind, IntegerSuffix, PointerQualifier},
     span::{Node, Span},
 };
+
+pub enum CfgLowerError {
+    UndefinedIdentifier(Span),
+    UnsupportedExpression(Span),
+    UnsupportedStatement(Span),
+    UnsupportedBinaryOperator(Span),
+    UnknownError(anyhow::Error),
+}
+
+impl From<anyhow::Error> for CfgLowerError {
+    fn from(value: anyhow::Error) -> Self {
+        Self::UnknownError(value)
+    }
+}
+
+type Result<T> = std::result::Result<T, CfgLowerError>;
 
 struct ActiveBb {
     idx: Idx<BasicBlock>,
@@ -91,7 +107,7 @@ pub fn lower_body<'a>(
     name: String,
     fd: &ast::FunctionDefinition,
     statics: &'a CfgStatics,
-) -> anyhow::Result<CfgBody<'a>> {
+) -> Result<CfgBody<'a>> {
     let mut ctx = LowerCtx::new(name, statics);
     ctx.add_argument_locals(&fd.declarator.node.derived);
     let start = ctx.new_basic_block();
@@ -134,7 +150,7 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         statement: &Node<ast::Statement>,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         match &statement.node {
             ast::Statement::Return(e) => {
                 if let Some(e) = e {
@@ -161,7 +177,7 @@ impl<'a> LowerCtx<'a> {
                             self.lower_declaration(&decl.node, active_bb)?;
                         }
                         ast::BlockItem::StaticAssert(_) => {
-                            bail!("not supported: unknown block item");
+                            // We can ignore static asserts for now
                         }
                     }
                 }
@@ -212,7 +228,7 @@ impl<'a> LowerCtx<'a> {
                                 self.lower_declaration(&decl.node, active_bb)?;
                             }
                             ast::ForInitializer::StaticAssert(_) => {
-                                bail!("not supported: StaticAssert is not supported")
+                                // We can ignore static asserts for now
                             }
                         }
                     }
@@ -268,14 +284,16 @@ impl<'a> LowerCtx<'a> {
             }
             ast::Statement::Continue => {
                 let Some(continue_bb) = active_bb.continue_bb else {
-                    bail!("unexpected statement: continue is not used in a loop")
+                    return Err(
+                        anyhow!("unexpected statement: continue is not used in a loop").into(),
+                    );
                 };
                 self.set_terminator(Terminator::Goto(continue_bb), active_bb.idx);
                 Ok(())
             }
             ast::Statement::Break => {
                 let Some(break_bb) = active_bb.break_bb else {
-                    bail!("unexpected statement: break is not used in a loop")
+                    return Err(anyhow!("unexpected statement: break is not used in a loop").into());
                 };
                 self.set_terminator(Terminator::Goto(break_bb), active_bb.idx);
                 Ok(())
@@ -285,7 +303,7 @@ impl<'a> LowerCtx<'a> {
             | ast::Statement::Switch(_)
             | ast::Statement::DoWhile(_)
             | ast::Statement::Goto(_)
-            | ast::Statement::Asm(_) => bail!("not supported: unknown statement type"),
+            | ast::Statement::Asm(_) => Err(CfgLowerError::UnsupportedStatement(statement.span)),
         }
     }
 
@@ -302,7 +320,7 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         statement: &ast::IfStatement,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         let mut branches = vec![(
             statement,
             active_bb.idx, /* the first if does not require a seperate condition_bb */
@@ -359,12 +377,12 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         declaration: &ast::Declaration,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<()> {
+    ) -> Result<()> {
         for declarator in &declaration.declarators {
             let place = match &declarator.node.declarator.node.kind.node {
                 DeclaratorKind::Identifier(identifier) => self.named_local(&identifier.node.name),
                 DeclaratorKind::Abstract | DeclaratorKind::Declarator(_) => {
-                    bail!("not supported: unknown declarator kind")
+                    return Err(anyhow!("not supported: unknown declarator kind").into());
                 }
             };
 
@@ -383,7 +401,7 @@ impl<'a> LowerCtx<'a> {
                         return Ok(());
                     }
                     ast::Initializer::List(_) => {
-                        bail!("not supported: unknown declarator initializer")
+                        return Err(anyhow!("not supported: unknown declarator initializer").into());
                     }
                 }
             }
@@ -500,14 +518,16 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<Rvalue> {
+    ) -> Result<Rvalue> {
         match &expr.node {
             ast::Expression::Identifier(id) => {
                 let operand = match self.resolve_identifier(&id.node) {
                     Ok(local) => Operand::Place(local.into(), expr.span),
                     Err(_) => match self.resolve_identifier_static(&id.node) {
                         Ok(sttc) => Operand::Place(sttc.into(), expr.span),
-                        Err(_) => bail!("Undefined identifier {}", &id.node.name),
+                        Err(_) => {
+                            return Err(CfgLowerError::UndefinedIdentifier(id.span));
+                        }
                     },
                 };
                 Ok(Rvalue::Use(operand))
@@ -545,7 +565,9 @@ impl<'a> LowerCtx<'a> {
                     | ast::BinaryOperator::AssignBitwiseAnd
                     | ast::BinaryOperator::AssignBitwiseXor
                     | ast::BinaryOperator::AssignBitwiseOr => {
-                        bail!("not supported: unknown binary operator")
+                        return Err(CfgLowerError::UnsupportedBinaryOperator(
+                            bo.node.operator.span,
+                        ));
                     }
                     _ => {
                         let lhs = self.expr_to_operand(&bo.node.lhs, active_bb)?;
@@ -568,7 +590,11 @@ impl<'a> LowerCtx<'a> {
                             ast::BinaryOperator::BitwiseAnd => BinaryOpKind::BitAnd,
                             ast::BinaryOperator::BitwiseXor => BinaryOpKind::BitXor,
                             ast::BinaryOperator::BitwiseOr => BinaryOpKind::BitOr,
-                            _ => bail!("not supported: unknown binary operator"),
+                            _ => {
+                                return Err(CfgLowerError::UnsupportedBinaryOperator(
+                                    bo.node.operator.span,
+                                ));
+                            }
                         };
                         Rvalue::BinaryOp(op_kind, lhs, rhs)
                     }
@@ -676,7 +702,7 @@ impl<'a> LowerCtx<'a> {
                     .arguments
                     .iter()
                     .map(|x| self.expr_to_operand(&x, active_bb))
-                    .collect::<anyhow::Result<Vec<Operand>>>()?;
+                    .collect::<Result<Vec<Operand>>>()?;
                 let destination = self.temp_local();
                 let new_bb = self.new_basic_block();
                 self.set_terminator(
@@ -703,7 +729,9 @@ impl<'a> LowerCtx<'a> {
             | ast::Expression::Comma(_)
             | ast::Expression::OffsetOf(_)
             | ast::Expression::VaArg(_)
-            | ast::Expression::Statement(_) => bail!("not supported: unknown expression"),
+            | ast::Expression::Statement(_) => {
+                return Err(CfgLowerError::UnsupportedExpression(expr.span));
+            }
         }
     }
 
@@ -711,7 +739,7 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<Operand> {
+    ) -> Result<Operand> {
         let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
         Ok(self.rvalue_to_operand(
             rvalue,
@@ -727,7 +755,7 @@ impl<'a> LowerCtx<'a> {
         &mut self,
         expr: &Node<ast::Expression>,
         active_bb: &mut ActiveBb,
-    ) -> anyhow::Result<Place> {
+    ) -> Result<Place> {
         let rvalue = self.expr_to_rvalue(&expr, active_bb)?;
         Ok(self.rvalue_to_operand_place(rvalue, active_bb, expr.span))
     }
