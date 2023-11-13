@@ -18,8 +18,7 @@ mod lower;
 mod report;
 mod utils;
 
-// const TEST_FILE: &str = "malloc_leak1.c";
-const TEST_FILE: &str = "malloc_leak1.c";
+const TEST_FILE: &str = "preproccessed_file.c";
 
 #[derive(Parser)]
 struct CliOptions {
