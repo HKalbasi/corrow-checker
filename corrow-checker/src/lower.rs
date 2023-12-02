@@ -753,6 +753,13 @@ impl<'a> LowerCtx<'a> {
                 active_bb.switch(dest_bb);
                 Ok(Rvalue::Use(Operand::Place(destination, c.span)))
             }
+            ast::Expression::Comma(c) => {
+                let (last, intermediates) = c.split_last().expect("Invalid comma expression");
+                for exp in intermediates {
+                    _ = self.expr_to_rvalue(exp, active_bb)?;
+                }
+                self.expr_to_rvalue(last, active_bb)
+            }
             ast::Expression::GenericSelection(_)
             | ast::Expression::Member(_)
             | ast::Expression::CompoundLiteral(_)
@@ -760,7 +767,6 @@ impl<'a> LowerCtx<'a> {
             | ast::Expression::SizeOfVal(_)
             | ast::Expression::AlignOf(_)
             | ast::Expression::Cast(_)
-            | ast::Expression::Comma(_)
             | ast::Expression::OffsetOf(_)
             | ast::Expression::VaArg(_)
             | ast::Expression::Statement(_) => {

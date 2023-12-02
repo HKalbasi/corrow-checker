@@ -57,6 +57,9 @@ fn main() {
         statics: Arena::new(),
     };
     let debug_mode = cli_options.debug_mode;
+    if debug_mode {
+        std::fs::write("/tmp/corrow-checker-preprocessed-file.c", &ast.source).unwrap();
+    }
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
