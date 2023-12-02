@@ -5,11 +5,12 @@ use xshell::{cmd, Shell};
 
 fn run_on_all_tests(sh: Shell, job: impl Fn(&str, String)) -> anyhow::Result<()> {
     sh.change_dir("tests");
-    let tests = cmd!(sh, "ls").read()?;
+    for old_file in cmd!(sh, "find . -name '*.stderr'").read()?.lines() {
+        cmd!(sh, "rm {old_file}").quiet().run()?;
+    }
+    let tests = cmd!(sh, "find . -name '*.c'").read()?;
     for test in tests.lines() {
-        let Some(test) = test.strip_suffix(".c") else {
-            continue;
-        };
+        let test = test.strip_suffix(".c").unwrap();
         let output = cmd!(sh, "../target/release/corrow-checker {test}.c").read_stderr()?;
         let output = strip_ansi_escapes::strip_str(output);
         job(test, output);
