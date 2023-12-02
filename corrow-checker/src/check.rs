@@ -168,7 +168,10 @@ impl CrepeFiller {
             self.add_control_flow_link(cur, before_terminator[bb]);
         }
         for (bb, bb_data) in cfg.basic_blocks.iter() {
-            let terminator = bb_data.terminator.as_ref().unwrap();
+            let terminator = bb_data
+                .terminator
+                .as_ref()
+                .expect("Terminator should be None only in construction");
             match terminator {
                 Terminator::Return(span) => {
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);

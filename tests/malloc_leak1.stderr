@@ -1,5 +1,5 @@
 Error: Potential leak detected
-    ╭─[malloc_leak1.c:1:1]
+    ╭─[preproccessed_file.c:1:1]
     │
  31 │     void *p1 = malloc(5);
     │              ─────┬┬────  
@@ -12,7 +12,7 @@ Error: Potential leak detected
     │        ╰───── Ownership handle lost without proper destruction
 ────╯
 Error: Potential leak detected
-    ╭─[malloc_leak1.c:1:1]
+    ╭─[preproccessed_file.c:1:1]
     │
  31 │     void *p1 = malloc(5);
     │              ─────┬┬────  
@@ -28,7 +28,7 @@ Error: Potential leak detected
     │        ╰───── Ownership handle lost without proper destruction
 ────╯
 Error: Potential leak detected
-    ╭─[malloc_leak1.c:1:1]
+    ╭─[preproccessed_file.c:1:1]
     │
  36 │     p2 = malloc(10);
     │     ───────┬──┬────  

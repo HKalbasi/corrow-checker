@@ -1,5 +1,5 @@
 Error: Potential use after move
-    ╭─[malloc_leak1.c:1:1]
+    ╭─[preproccessed_file.c:1:1]
     │
  32 │     int *p2 = p1;
     │             ──┬─  

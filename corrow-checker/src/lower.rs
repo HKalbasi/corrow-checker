@@ -718,6 +718,41 @@ impl<'a> LowerCtx<'a> {
                 active_bb.switch(new_bb);
                 Ok(Rvalue::Use(Operand::Place(destination.into(), call.span)))
             }
+            ast::Expression::Conditional(c) => {
+                let destination: Place = self.temp_local().into();
+                let dest_bb = self.new_basic_block();
+                let condition = self.expr_to_operand(&c.node.condition, active_bb)?;
+                let then_bb = self.new_basic_block();
+                let else_bb = self.new_basic_block();
+                self.set_terminator(
+                    Terminator::SwitchInt(condition, vec![1], vec![then_bb, else_bb]),
+                    active_bb.idx,
+                );
+                active_bb.switch(then_bb);
+                let then_rvalue = self.expr_to_rvalue(&c.node.then_expression, active_bb)?;
+                self.push_assignment(
+                    destination.clone(),
+                    then_rvalue,
+                    active_bb,
+                    c.span,
+                    c.node.then_expression.span,
+                    c.span,
+                );
+                self.set_terminator(Terminator::Goto(dest_bb), active_bb.idx);
+                active_bb.switch(else_bb);
+                let else_rvalue = self.expr_to_rvalue(&c.node.else_expression, active_bb)?;
+                self.push_assignment(
+                    destination.clone(),
+                    else_rvalue,
+                    active_bb,
+                    c.span,
+                    c.node.else_expression.span,
+                    c.span,
+                );
+                self.set_terminator(Terminator::Goto(dest_bb), active_bb.idx);
+                active_bb.switch(dest_bb);
+                Ok(Rvalue::Use(Operand::Place(destination, c.span)))
+            }
             ast::Expression::GenericSelection(_)
             | ast::Expression::Member(_)
             | ast::Expression::CompoundLiteral(_)
@@ -725,7 +760,6 @@ impl<'a> LowerCtx<'a> {
             | ast::Expression::SizeOfVal(_)
             | ast::Expression::AlignOf(_)
             | ast::Expression::Cast(_)
-            | ast::Expression::Conditional(_)
             | ast::Expression::Comma(_)
             | ast::Expression::OffsetOf(_)
             | ast::Expression::VaArg(_)
