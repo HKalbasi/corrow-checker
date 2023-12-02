@@ -278,7 +278,7 @@ impl std::fmt::Debug for Statement {
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Terminator {
-    Return(Span),
+    Return(Span, bool),
     Call {
         callee: Operand,
         args: Vec<Operand>,
@@ -293,7 +293,8 @@ pub enum Terminator {
 impl std::fmt::Debug for Terminator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Terminator::Return(_) => f.write_str("return"),
+            Terminator::Return(_, false) => f.write_str("return"),
+            Terminator::Return(_, true) => f.write_str("return [implicit]"),
             Terminator::Call {
                 callee,
                 args,
@@ -339,6 +340,13 @@ impl std::fmt::Debug for Terminator {
 pub struct CfgStatics {
     pub statics: Arena<Static>,
     pub name_to_static: HashMap<String, Idx<Static>>,
+}
+
+impl CfgStatics {
+    pub fn insert_static(&mut self, name: String, sttc: Static) {
+        let idx = self.statics.alloc(sttc);
+        self.name_to_static.insert(name, idx);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]

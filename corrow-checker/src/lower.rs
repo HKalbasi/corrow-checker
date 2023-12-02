@@ -16,6 +16,7 @@ pub enum CfgLowerError {
     UnsupportedExpression(Span),
     UnsupportedStatement(Span),
     UnsupportedBinaryOperator(Span),
+    UnsupportedUnaryOperator(Span),
     UnknownError(anyhow::Error),
 }
 
@@ -63,13 +64,24 @@ impl ActiveBb {
 
 pub fn lower_statics(decl: &ast::Declaration, statics: &mut CfgStatics) -> anyhow::Result<()> {
     for decls in &decl.declarators {
-        if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
+        lower_declarator(&decls.node.declarator, statics)?;
+    }
+
+    Ok(())
+}
+
+pub fn lower_declarator(
+    declarator: &Node<ast::Declarator>,
+    statics: &mut CfgStatics,
+) -> anyhow::Result<()> {
+    Ok(
+        if let DeclaratorKind::Identifier(id) = &declarator.node.kind.node {
             let name = id.node.name.clone();
             let mut ret_ownership = None;
             let mut param_ownerships = vec![];
             let mut is_function = false;
 
-            for derived_decl in &decls.node.declarator.node.derived {
+            for derived_decl in &declarator.node.derived {
                 match &derived_decl.node {
                     lang_c::ast::DerivedDeclarator::Pointer(_) => {
                         ret_ownership =
@@ -95,12 +107,9 @@ pub fn lower_statics(decl: &ast::Declaration, statics: &mut CfgStatics) -> anyho
                 Static::Variable(ret_ownership)
             };
 
-            let idx = statics.statics.alloc(sttc.into());
-            statics.name_to_static.insert(name, idx);
-        }
-    }
-
-    Ok(())
+            statics.insert_static(name, sttc);
+        },
+    )
 }
 
 pub fn lower_body<'a>(
@@ -113,6 +122,11 @@ pub fn lower_body<'a>(
     let start = ctx.new_basic_block();
     let mut active_bb = ActiveBb::new(start);
     ctx.lower_statement(&fd.statement, &mut active_bb)?;
+    if ctx.result.basic_blocks[active_bb.idx].terminator.is_none() {
+        let mut span = fd.statement.span;
+        span.start = span.end - 1;
+        ctx.result.basic_blocks[active_bb.idx].terminator = Some(Terminator::Return(span, true))
+    }
     Ok(ctx.result)
 }
 
@@ -164,7 +178,7 @@ impl<'a> LowerCtx<'a> {
                         e.span,
                     );
                 }
-                self.set_terminator(Terminator::Return(statement.span), active_bb.idx);
+                self.set_terminator(Terminator::Return(statement.span, false), active_bb.idx);
                 Ok(())
             }
             ast::Statement::Compound(stmts) => {
@@ -689,11 +703,13 @@ impl<'a> LowerCtx<'a> {
                     );
                     Ok(Rvalue::Use(Operand::Place(place, expr.span)))
                 }
-                ast::UnaryOperator::Indirection => todo!(),
-                ast::UnaryOperator::Plus => todo!(),
-                ast::UnaryOperator::Minus => todo!(),
-                ast::UnaryOperator::Complement => todo!(),
-                ast::UnaryOperator::Negate => todo!(),
+                ast::UnaryOperator::Indirection
+                | ast::UnaryOperator::Plus
+                | ast::UnaryOperator::Minus
+                | ast::UnaryOperator::Complement
+                | ast::UnaryOperator::Negate => Err(CfgLowerError::UnsupportedUnaryOperator(
+                    unary.node.operator.span,
+                )),
             },
             ast::Expression::Call(call) => {
                 let callee = self.expr_to_operand(&call.node.callee, active_bb)?;

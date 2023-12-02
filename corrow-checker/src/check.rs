@@ -24,7 +24,7 @@ crepe! {
 
     @input
     #[derive(Debug)]
-    struct ControlFlowReturns(NodeId, Span);
+    struct ControlFlowReturns(NodeId, Span, bool);
 
     @input
     #[derive(Debug)]
@@ -56,7 +56,7 @@ crepe! {
 
     @output
     #[derive(Debug)]
-    pub struct LeakByReturn(pub OwnershipReason, pub Span);
+    pub struct LeakByReturn(pub OwnershipReason, pub Span, pub bool);
 
     @output
     #[derive(Debug)]
@@ -71,7 +71,7 @@ crepe! {
     PlaceMayDangle(p, n, lost_span) <- PlaceMayDangle(p, n1, lost_span), ControlFlowGoes(n1, n), !Assign(p, _, n, _);
 
     LeakByAssign(own_reason, lost_span) <- PlaceOwnValue(p, n1, own_reason), ControlFlowGoes(n1, n), PlacePrevValueLostByAssign(p, n, lost_span);
-    LeakByReturn(own_reason, return_span) <- PlaceOwnValue(_, n, own_reason), ControlFlowReturns(n, return_span);
+    LeakByReturn(own_reason, return_span, return_implicit) <- PlaceOwnValue(_, n, own_reason), ControlFlowReturns(n, return_span, return_implicit);
     UseAfterMove(move_span, use_span) <- PlaceMayDangle(p, n1, move_span), ControlFlowGoes(n1, n), PlaceUsed(p, n, use_span);
 }
 
@@ -173,11 +173,13 @@ impl CrepeFiller {
                 .as_ref()
                 .expect("Terminator should be None only in construction");
             match terminator {
-                Terminator::Return(span) => {
+                Terminator::Return(span, implicit) => {
                     self.add_control_flow_link(before_terminator[bb], end_of_block[bb]);
-                    self.crepe
-                        .controlflowreturns
-                        .push(ControlFlowReturns(end_of_block[bb], *span));
+                    self.crepe.controlflowreturns.push(ControlFlowReturns(
+                        end_of_block[bb],
+                        *span,
+                        *implicit,
+                    ));
                 }
                 Terminator::Call {
                     callee,

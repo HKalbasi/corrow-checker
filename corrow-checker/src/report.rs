@@ -88,6 +88,11 @@ impl CfgLowerError {
                     .with_message("Unsupported binary operator")
                     .with_color(ariadne::Color::Magenta),
             ),
+            CfgLowerError::UnsupportedUnaryOperator(span) => builder.add_label(
+                Label::new((TEST_FILE, span.start..span.end))
+                    .with_message("Unsupported unary operator")
+                    .with_color(ariadne::Color::Magenta),
+            ),
         }
     }
 }

@@ -8,7 +8,7 @@ use lang_c::{
     ast::{DeclaratorKind, ExternalDeclaration},
     driver::{parse, Config},
 };
-use lower::{lower_body, lower_statics};
+use lower::{lower_body, lower_declarator, lower_statics};
 
 use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn, UseAfterMove};
 
@@ -91,6 +91,10 @@ fn main() {
                     _ => unreachable!(),
                 };
 
+                if !statics.name_to_static.contains_key(&name) {
+                    lower_declarator(&fd.node.declarator, &mut statics).unwrap();
+                }
+
                 match lower_body(name, &fd.node, &statics) {
                     Ok(cfg) => {
                         if debug_mode {
@@ -122,7 +126,11 @@ fn main() {
                                         .eprint((TEST_FILE, Source::from(&ast.source)))
                                         .unwrap();
                                 }
-                                CheckError::LeakByReturn(LeakByReturn(own_reason, return_span)) => {
+                                CheckError::LeakByReturn(LeakByReturn(
+                                    own_reason,
+                                    return_span,
+                                    return_implicit,
+                                )) => {
                                     let mut builder =
                                         Report::build(ariadne::ReportKind::Error, TEST_FILE, 0)
                                             .with_message("Potential leak detected");
@@ -133,7 +141,11 @@ fn main() {
                                                 TEST_FILE,
                                                 return_span.start..return_span.end,
                                             ))
-                                            .with_message("Function exited without proper destruction of that value")
+                                            .with_message(if return_implicit {
+                                                "Function implicitly exited without proper destruction of that value"
+                                            } else {
+                                                "Function exited without proper destruction of that value"    
+                                            })
                                             .with_color(ariadne::Color::Red),
                                         )
                                         .finish()
