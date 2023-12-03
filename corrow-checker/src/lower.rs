@@ -776,13 +776,14 @@ impl<'a> LowerCtx<'a> {
                 }
                 self.expr_to_rvalue(last, active_bb)
             }
+            // We don't consider types yet, so cast is a no op
+            ast::Expression::Cast(c) => self.expr_to_rvalue(&c.node.expression, active_bb),
             ast::Expression::GenericSelection(_)
             | ast::Expression::Member(_)
             | ast::Expression::CompoundLiteral(_)
             | ast::Expression::SizeOfTy(_)
             | ast::Expression::SizeOfVal(_)
             | ast::Expression::AlignOf(_)
-            | ast::Expression::Cast(_)
             | ast::Expression::OffsetOf(_)
             | ast::Expression::VaArg(_)
             | ast::Expression::Statement(_) => {

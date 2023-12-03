@@ -1,0 +1,16 @@
+Error: Potential leak detected
+    ╭─[preproccessed_file.c:1:1]
+    │
+ 32 │     void *p1 = malloc(5);
+    │              ─────┬┬────  
+    │                   ╰─────── Ownership of the value transferred to this place here
+    │                    │      
+    │                    ╰────── Ownership of the value transferred to this function here
+ 33 │     size_t p1_addr = (size_t)p1;
+    │                    ──────┬─────  
+    │                          ╰─────── Ownership of the value transferred to this place here
+    │ 
+ 38 │ }
+    │ ┬  
+    │ ╰── Function implicitly exited without proper destruction of that value
+────╯
