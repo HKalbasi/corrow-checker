@@ -52,10 +52,7 @@ fn main() {
             exit(1);
         }
     };
-    let mut statics = CfgStatics {
-        name_to_static: HashMap::new(),
-        statics: Arena::new(),
-    };
+    let mut statics = CfgStatics::new();
     let debug_mode = cli_options.debug_mode;
     if debug_mode {
         std::fs::write("/tmp/corrow-checker-preprocessed-file.c", &ast.source).unwrap();

@@ -343,6 +343,23 @@ pub struct CfgStatics {
 }
 
 impl CfgStatics {
+    pub fn new() -> Self {
+        let mut this = CfgStatics {
+            name_to_static: HashMap::new(),
+            statics: Arena::new(),
+        };
+        // Add builtins (may appear as macro expansion result) https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html
+        let builtins = [
+            ("__builtin_bswap16", Static::Function(None, vec![None])),
+            ("__builtin_bswap32", Static::Function(None, vec![None])),
+            ("__builtin_bswap64", Static::Function(None, vec![None])),
+        ];
+        for (name, sttc) in builtins {
+            this.insert_static(name.to_owned(), sttc);
+        }
+        this
+    }
+
     pub fn insert_static(&mut self, name: String, sttc: Static) {
         let idx = self.statics.alloc(sttc);
         self.name_to_static.insert(name, idx);
