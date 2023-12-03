@@ -1,0 +1,32 @@
+Error: Potential leak detected
+    ╭─[preproccessed_file.c:1:1]
+    │
+ 38 │     void* p1 = malloc(Foo1);
+    │              ───────┬┬─────  
+    │                     ╰──────── Ownership of the value transferred to this place here
+    │                      │       
+    │                      ╰─────── Ownership of the value transferred to this function here
+    │ 
+ 40 │     global_config = p1;
+    │     ─────────┬────────  
+    │              ╰────────── Ownership of the value transferred to this place here
+ 41 │     global_config = p2;
+    │     ─────────┬────────  
+    │              ╰────────── Ownership handle lost without proper destruction
+────╯
+Error: Potential leak detected
+    ╭─[preproccessed_file.c:1:1]
+    │
+ 39 │     void* p2 = malloc(Foo2);
+    │              ───────┬┬─────  
+    │                     ╰──────── Ownership of the value transferred to this place here
+    │                      │       
+    │                      ╰─────── Ownership of the value transferred to this function here
+    │ 
+ 41 │     global_config = p2;
+    │     ─────────┬────────  
+    │              ╰────────── Ownership of the value transferred to this place here
+ 42 │ }
+    │ ┬  
+    │ ╰── Function implicitly exited without proper destruction of that value
+────╯

@@ -62,19 +62,36 @@ impl ActiveBb {
     }
 }
 
-pub fn lower_statics(decl: &ast::Declaration, statics: &mut CfgStatics) -> anyhow::Result<()> {
-    for decls in &decl.declarators {
-        lower_declarator(&decls.node.declarator, statics)?;
+impl CfgStatics {
+    pub fn lower_statics(&mut self, decl: &ast::Declaration) -> anyhow::Result<()> {
+        for specifier in &decl.specifiers {
+            self.lower_specifier(specifier)?;
+        }
+        for decls in &decl.declarators {
+            self.lower_declarator(&decls.node.declarator)?;
+        }
+
+        Ok(())
     }
 
-    Ok(())
-}
+    pub fn lower_specifier(
+        &mut self,
+        specifier: &Node<ast::DeclarationSpecifier>,
+    ) -> anyhow::Result<()> {
+        if let ast::DeclarationSpecifier::TypeSpecifier(t) = &specifier.node {
+            if let ast::TypeSpecifier::Enum(e) = &t.node {
+                for en in &e.node.enumerators {
+                    self.insert_static(
+                        en.node.identifier.node.name.clone(),
+                        Static::Variable(None),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
-pub fn lower_declarator(
-    declarator: &Node<ast::Declarator>,
-    statics: &mut CfgStatics,
-) -> anyhow::Result<()> {
-    Ok(
+    pub fn lower_declarator(&mut self, declarator: &Node<ast::Declarator>) -> anyhow::Result<()> {
         if let DeclaratorKind::Identifier(id) = &declarator.node.kind.node {
             let name = id.node.name.clone();
             let mut ret_ownership = None;
@@ -107,9 +124,10 @@ pub fn lower_declarator(
                 Static::Variable(ret_ownership)
             };
 
-            statics.insert_static(name, sttc);
-        },
-    )
+            self.insert_static(name, sttc);
+        }
+        Ok(())
+    }
 }
 
 pub fn lower_body<'a>(
@@ -154,7 +172,7 @@ impl<'a> LowerCtx<'a> {
     fn set_terminator(&mut self, terminator: Terminator, bb_idx: Idx<BasicBlock>) {
         let bb = &mut self.result.basic_blocks[bb_idx];
         if let Some(_) = bb.terminator {
-            dbg!("-- resetting terminator ignored --");
+            eprintln!("-- resetting terminator ignored --");
         } else {
             bb.terminator = Some(terminator);
         }

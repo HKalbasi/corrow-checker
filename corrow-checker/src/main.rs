@@ -1,14 +1,13 @@
-use std::{collections::HashMap, eprintln, process::exit};
+use std::{eprintln, process::exit};
 
 use ariadne::{Label, Report, Source};
 use cfg::CfgStatics;
 use clap::Parser;
-use la_arena::Arena;
 use lang_c::{
     ast::{DeclaratorKind, ExternalDeclaration},
     driver::{parse, Config},
 };
-use lower::{lower_body, lower_declarator, lower_statics};
+use lower::lower_body;
 
 use crate::check::{check_cfg, CheckError, LeakByAssign, LeakByReturn, UseAfterMove};
 
@@ -60,7 +59,7 @@ fn main() {
     for node in &ast.unit.0 {
         match &node.node {
             ExternalDeclaration::Declaration(decl) => {
-                lower_statics(&decl.node, &mut statics).unwrap();
+                statics.lower_statics(&decl.node).unwrap();
                 for decls in &decl.node.declarators {
                     if let DeclaratorKind::Identifier(id) = &decls.node.declarator.node.kind.node {
                         if debug_mode {
@@ -89,7 +88,7 @@ fn main() {
                 };
 
                 if !statics.name_to_static.contains_key(&name) {
-                    lower_declarator(&fd.node.declarator, &mut statics).unwrap();
+                    statics.lower_declarator(&fd.node.declarator).unwrap();
                 }
 
                 match lower_body(name, &fd.node, &statics) {
